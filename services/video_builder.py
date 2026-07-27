@@ -2,12 +2,14 @@
 
 import os
 import pysrt
-from moviepy import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_videoclips
+import random
+from moviepy import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_videoclips, CompositeVideoClip
 from moviepy.video.fx import Crop, Resize
 from moviepy.audio.fx import MultiplyVolume
 from elevenlabs.client import ElevenLabs
 from elevenlabs import save
 from gtts import gTTS
+from moviepy import VideoFileClip
 
 
 class VideoBuilder:
@@ -57,17 +59,60 @@ class VideoBuilder:
     subs.save(filepath, encoding='utf-8')
     return filepath
 
-  def apply_ken_burns(self, image_path: str, duration: int, zoom_factor: float = 1.1) -> ImageClip:
-    clip = ImageClip(image_path).with_duration(duration)
+  def _create_blurred_background(self, image_path: str, duration: int) -> ImageClip:
+    """Creates an automatic blurred background for images that don't fit 9:16 natively."""
+    from PIL import Image, ImageFilter
+    import numpy as np
 
-    # Scale to cover target dimensions before cropping
-    clip = clip.with_effects([Resize(height=1920)])
-    if clip.w < 1080:
-      clip = clip.with_effects([Resize(width=1080)])
+    img = Image.open(image_path).convert('RGB')
+    img = img.resize((1080, int(1080 * img.height / img.width)), Image.LANCZOS)
+    img = img.crop((0, (img.height - 1920) // 2, 1080, (img.height + 1920) // 2))
+    img = img.filter(ImageFilter.GaussianBlur(radius=30))
 
-    clip = clip.with_effects([Resize(lambda t: 1 + (zoom_factor - 1) * t / duration)])
-    clip = clip.with_effects([Crop(x_center=clip.w / 2, y_center=clip.h / 2, width=1080, height=1920)])
-    return clip
+    bg_clip = ImageClip(np.array(img)).with_duration(duration)
+    return bg_clip
+
+  def apply_dynamic_motion(self, image_path: str, duration: int, zoom_factor: float = 1.15) -> ImageClip:
+    motion_type = random.choice(["zoom_in", "pan_right", "pan_left", "pan_up", "pan_down"])
+
+    base_clip = ImageClip(image_path).with_duration(duration)
+
+    if base_clip.w / base_clip.h > 1080 / 1920:
+      bg_clip = self._create_blurred_background(image_path, duration)
+      fg_clip = base_clip.with_effects([Resize(width=1080)])
+      fg_clip = fg_clip.set_position("center")
+      clip = CompositeVideoClip([bg_clip, fg_clip])
+    else:
+      clip = base_clip.with_effects([Resize(height=1920)])
+      if clip.w < 1080:
+        clip = clip.with_effects([Resize(width=1080)])
+
+    w, h = clip.w, clip.h
+    target_w, target_h = 1080, 1920
+
+    def effect_func(get_frame, t):
+      p = t / duration
+
+      if motion_type == "zoom_in":
+        scale = 1 + (zoom_factor - 1) * p
+        frame = Resize(lambda _: scale)(clip).get_frame(t)
+        cy, cx = frame.shape[0] // 2, frame.shape[1] // 2
+        return frame[cy - target_h // 2:cy + target_h // 2, cx - target_w // 2:cx + target_w // 2]
+
+      elif motion_type == "pan_right":
+        max_pan = w - target_w
+        cx = int(max_pan * p)
+        return get_frame(t)[(h - target_h) // 2: (h + target_h) // 2, cx: cx + target_w]
+
+      elif motion_type == "pan_left":
+        max_pan = w - target_w
+        cx = int(max_pan * (1 - p))
+        return get_frame(t)[(h - target_h) // 2: (h + target_h) // 2, cx: cx + target_w]
+
+      cy, cx = h // 2, w // 2
+      return get_frame(t)[cy - target_h // 2:cy + target_h // 2, cx - target_w // 2:cx + target_w // 2]
+
+    return clip.fl(effect_func)
 
   def assemble(self, scene_data: list, output_filename: str = "final_reel.mp4"):
     video_clips = []
@@ -81,7 +126,7 @@ class VideoBuilder:
       if not os.path.exists(img_path):
         raise FileNotFoundError(f"Missing required image for assembly: {img_path}")
 
-      v_clip = self.apply_ken_burns(img_path, scene['duration'])
+      v_clip = self.apply_dynamic_motion(img_path, scene['duration'])
 
       if os.path.exists(audio_path):
         a_clip = AudioFileClip(audio_path)

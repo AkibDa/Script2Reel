@@ -5,7 +5,7 @@ import os
 import uuid
 import traceback
 from workflows.graph import reel_app
-from services.image_generator import ImageGenerator
+from services.image_provider import ImageProvider
 from services.video_builder import VideoBuilder
 
 st.set_page_config(page_title="Script2Reel | AI Creative Studio", layout="wide")
@@ -13,7 +13,7 @@ st.set_page_config(page_title="Script2Reel | AI Creative Studio", layout="wide")
 
 @st.cache_resource
 def get_image_generator():
-  return ImageGenerator()
+  return ImageProvider()
 
 
 if "thread_id" not in st.session_state:
