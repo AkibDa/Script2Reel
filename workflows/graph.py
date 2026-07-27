@@ -1,7 +1,6 @@
 #workflows/graph.py
 
 import os
-import json
 import base64
 import concurrent.futures
 from typing import TypedDict, List, Dict, Any
@@ -11,7 +10,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
-from services.image_provider import LocalSDXLProvider
+from services.image_provider import get_image_provider
 
 
 class ReelState(TypedDict):
@@ -25,6 +24,7 @@ class ReelState(TypedDict):
   scene_json: List[Dict[str, Any]]
   image_prompts: List[Dict[str, Any]]
   run_dir: str
+  dev_mode: str
 
 
 _llm_instance = None
@@ -57,6 +57,7 @@ def extract_text(response) -> str:
 
 
 def prompt_refiner_agent(state: ReelState) -> ReelState:
+  print("[graph] refiner starting...")
   prompt = ChatPromptTemplate.from_messages([
     ("system",
      "You are a Prompt Refiner Agent. Expand the user's raw prompt into a detailed brief including target audience, tone, pacing, hook, and CTA."),
@@ -64,10 +65,12 @@ def prompt_refiner_agent(state: ReelState) -> ReelState:
   ])
   chain = prompt | get_llm()
   response = chain.invoke(state)
+  print("[graph] refiner done")
   return {"refined_prompt": extract_text(response)}
 
 
 def screenplay_agent(state: ReelState) -> ReelState:
+  print("[graph] screenplay starting...")
   prompt = ChatPromptTemplate.from_messages([
     ("system",
      "You are a Screenplay Agent. Break the refined brief down into scenes. Include narration text, visual description, camera angle, and transition for each."),
@@ -75,65 +78,8 @@ def screenplay_agent(state: ReelState) -> ReelState:
   ])
   chain = prompt | get_llm()
   response = chain.invoke(state)
+  print("[graph] screenplay done")
   return {"screenplay": extract_text(response)}
-
-
-class SceneSubject(BaseModel):
-  main_subject: str = Field(description="The concrete object or person in the scene")
-  action: str = Field(description="What the subject is doing")
-  setting: str = Field(description="Where the scene takes place")
-  emotion: str = Field(description="The overarching mood")
-
-
-def subject_extractor_agent(state: ReelState) -> ReelState:
-  prompt = ChatPromptTemplate.from_messages([
-    ("system", "Extract the literal, concrete subjects from the scene description. Ignore abstract concepts."),
-    ("user", "Scene script: {voice}\nVisual concept: {visual}")
-  ])
-  structured_llm = get_llm().with_structured_output(SceneSubject)
-
-  updated_scenes = []
-  for scene in state["scene_json"]:
-    chain = prompt | structured_llm
-    subject_data = chain.invoke(scene)
-    scene["subject_data"] = subject_data.model_dump()
-    updated_scenes.append(scene)
-
-  return {"scene_json": updated_scenes}
-
-
-class StructuredPrompt(BaseModel):
-  subject: str
-  action: str
-  background: str
-  camera: str
-  style_keywords: str
-  lighting: str
-
-
-def visual_director_agent(state: ReelState) -> ReelState:
-  prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are a Visual Director. Convert the subject data into a strict image generation template. "
-     "Style requested: {style}. Match the style accurately (e.g., 'Educational Explainer' = flat vector illustration, "
-     "'Cinematic' = 35mm shallow depth of field)."),
-    ("user", "Subject Data: {subject_data}")
-  ])
-  structured_llm = get_llm().with_structured_output(StructuredPrompt)
-
-  enhanced_scenes = []
-  for scene in state["scene_json"]:
-    res = (prompt | structured_llm).invoke({"style": state["style"], "subject_data": scene["subject_data"]})
-
-    # Format into a dense comma-separated string for SDXL
-    final_prompt = (
-      f"{res.subject}, {res.action}, {res.background}, {res.camera}, "
-      f"{res.style_keywords}, {res.lighting}, highly detailed, masterpiece"
-    )
-    scene["image_prompt"] = final_prompt
-    enhanced_scenes.append(scene)
-
-  return {"image_prompts": enhanced_scenes}
 
 
 class Scene(BaseModel):
@@ -149,6 +95,7 @@ class SceneList(BaseModel):
 
 
 def scene_planner_agent(state: ReelState) -> ReelState:
+  print("[graph] planner starting...")
   prompt = ChatPromptTemplate.from_messages([
     ("system", "You are a Scene Planner Agent. Convert the screenplay into a strict JSON array of scenes."),
     ("user", "Screenplay: {screenplay}\nMake sure total duration is exactly {duration} seconds.")
@@ -169,38 +116,89 @@ def scene_planner_agent(state: ReelState) -> ReelState:
     for s in scenes:
       s["duration"] = max(1, round(s["duration"] * factor))
 
+  print("[graph] planner done")
   return {"scene_json": scenes}
 
 
-def _enhance_visual(scene: dict, style: str) -> dict:
+class SceneSubject(BaseModel):
+  main_subject: str = Field(description="The concrete object or person in the scene")
+  action: str = Field(description="What the subject is doing")
+  setting: str = Field(description="Where the scene takes place")
+  emotion: str = Field(description="The overarching mood")
+
+
+def _extract_subject(scene: dict, prompt: ChatPromptTemplate, structured_llm) -> dict:
+  chain = prompt | structured_llm
+  subject_data = chain.invoke(scene)
+  scene = scene.copy()
+  scene["subject_data"] = subject_data.model_dump()
+  return scene
+
+
+def subject_extractor_agent(state: ReelState) -> ReelState:
+  print("[graph] subject_extractor starting...")
+  prompt = ChatPromptTemplate.from_messages([
+    ("system", "Extract the literal, concrete subjects from the scene description. Ignore abstract concepts."),
+    ("user", "Scene script: {voice}\nVisual concept: {visual}")
+  ])
+  structured_llm = get_llm().with_structured_output(SceneSubject)
+
+  with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    futures = [executor.submit(_extract_subject, scene, prompt, structured_llm) for scene in state["scene_json"]]
+    updated_scenes = [f.result() for f in futures]
+
+  print("[graph] subject_extractor done")
+  return {"scene_json": updated_scenes}
+
+
+class StructuredPrompt(BaseModel):
+  subject: str
+  action: str
+  background: str
+  camera: str
+  style_keywords: str
+  lighting: str
+
+
+def _build_image_prompt(scene: dict, style: str) -> dict:
   prompt = ChatPromptTemplate.from_messages([
     ("system",
      "You are a Visual Director Agent for a text-to-image model with a strict "
-     "77-token limit. Rewrite the visual description into a concise, "
-     "literal, comma-separated image prompt. "
-     "The image MUST clearly depict the actual subject described — do not invent "
-     "unrelated symbolism, characters, or genre aesthetics (e.g. don't turn a "
-     "technical/educational topic into cyberpunk/sci-fi imagery) unless the scene "
-     "explicitly calls for it. Style should match: {style}. "
-     "No markdown, no headers, no full sentences, no bold text. "
-     "Maximum 60 words. Output ONLY the prompt, nothing else."),
-    ("user", "Visual: {visual}")
+     "77-token limit. Using the extracted subject data, produce a strict image "
+     "generation template. The image MUST clearly depict the literal subject/action/"
+     "setting given — do not invent unrelated symbolism, characters, or genre "
+     "aesthetics (e.g. don't turn a technical/educational topic into cyberpunk/sci-fi "
+     "imagery) unless the subject data explicitly calls for it. "
+     "Style requested: {style}. Match it accurately (e.g. 'Educational' = flat vector "
+     "illustration, 'Cinematic' = 35mm shallow depth of field)."),
+    ("user", "Subject data: {subject_data}")
   ])
-  chain = prompt | get_llm()
-  res = chain.invoke({"visual": scene["visual"], "style": style})
-  enhanced_scene = scene.copy()
+  structured_llm = get_llm().with_structured_output(StructuredPrompt)
+  res = (prompt | structured_llm).invoke({
+    "style": style,
+    "subject_data": scene.get("subject_data", {"main_subject": scene["visual"]})
+  })
 
-  text = extract_text(res).strip()
-  enhanced_scene["image_prompt"] = " ".join(text.split()[:60])
+  final_prompt = (
+    f"{res.subject}, {res.action}, {res.background}, {res.camera}, "
+    f"{res.style_keywords}, {res.lighting}, highly detailed, masterpiece"
+  )
+
+  enhanced_scene = scene.copy()
+  enhanced_scene["image_prompt"] = " ".join(final_prompt.split()[:60])
   return enhanced_scene
 
 
 def visual_director_agent(state: ReelState) -> ReelState:
+  print("[graph] visual_director starting...")
   style = state["style"]
   with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-    futures = [executor.submit(_enhance_visual, scene, style) for scene in state["scene_json"]]
+    futures = [executor.submit(_build_image_prompt, scene, style) for scene in state["scene_json"]]
     enhanced_scenes = [f.result() for f in futures]
+
+  print("[graph] visual_director done")
   return {"image_prompts": enhanced_scenes}
+
 
 def encode_image(image_path):
   with open(image_path, "rb") as image_file:
@@ -208,39 +206,51 @@ def encode_image(image_path):
 
 
 def image_generation_and_critic_agent(state: ReelState) -> ReelState:
-  provider = LocalSDXLProvider()
+  print("[graph] image_generation_and_critic starting...")
+  mode = state.get("dev_mode", "production")
+  provider = get_image_provider(mode)
   vision_llm = get_llm()
   run_dir = state.get("run_dir", "assets/temp")
 
+  candidates_count = 1 if mode in ["mock", "fast"] else 3
+
   for scene in state["image_prompts"]:
     candidates = []
-    for i in range(3):
+    for i in range(candidates_count):
       path = provider.generate(scene["image_prompt"], run_dir, f"scene_{scene['scene']}_cand_{i}")
       candidates.append(path)
 
-    messages = [
-      HumanMessage(content=[
-        {"type": "text",
-         "text": f"Narration: {scene['voice']}\nWhich of these 3 images best matches the narration and is visually clearest? Return ONLY the number 1, 2, or 3."},
-        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(candidates[0])}"}},
-        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(candidates[1])}"}},
-        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(candidates[2])}"}}
-      ])
-    ]
-
-    try:
-      choice = int(vision_llm.invoke(messages).content.strip())
-      best_img = candidates[choice - 1 if 1 <= choice <= 3 else 0]
-    except:
+    if candidates_count == 1:
       best_img = candidates[0]
+    else:
+      messages = [
+        HumanMessage(content=[
+          {"type": "text",
+           "text": f"Narration: {scene['voice']}\nWhich of these 3 images best matches the narration and is visually clearest? Return ONLY the number 1, 2, or 3."},
+          {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(candidates[0])}"}},
+          {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(candidates[1])}"}},
+          {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(candidates[2])}"}}
+        ])
+      ]
+
+      try:
+        choice = int(extract_text(vision_llm.invoke(messages)).strip())
+        best_img = candidates[choice - 1 if 1 <= choice <= 3 else 0]
+      except Exception:
+        best_img = candidates[0]
 
     final_path = os.path.join(run_dir, "images", f"scene_{scene['scene']}.png")
+    if os.path.exists(final_path):
+      os.remove(final_path)
     os.rename(best_img, final_path)
 
     for c in candidates:
-      if os.path.exists(c): os.remove(c)
+      if os.path.exists(c) and c != best_img:
+        os.remove(c)
 
+  print("[graph] image_generation_and_critic done")
   return state
+
 
 workflow = StateGraph(ReelState)
 workflow.add_node("refiner", prompt_refiner_agent)

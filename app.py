@@ -1,20 +1,13 @@
-#app.py
+# app.py
 
 import streamlit as st
 import os
 import uuid
 import traceback
 from workflows.graph import reel_app
-from services.image_provider import ImageProvider
 from services.video_builder import VideoBuilder
 
 st.set_page_config(page_title="Script2Reel | AI Creative Studio", layout="wide")
-
-
-@st.cache_resource
-def get_image_generator():
-  return ImageProvider()
-
 
 if "thread_id" not in st.session_state:
   st.session_state.thread_id = str(uuid.uuid4())
@@ -30,6 +23,15 @@ with st.sidebar:
   style = st.selectbox("Style", ["Motivational", "Educational", "Cinematic", "Documentary"])
   platform = st.selectbox("Platform", ["Instagram Reels", "TikTok", "YouTube Shorts"])
   voice = st.selectbox("Voice", ["Male", "Female"])
+
+  st.divider()
+
+  dev_mode = st.radio(
+    "Generation Mode",
+    ["mock", "fast", "production"],
+    format_func=lambda x:
+    {"mock": "🚀 Mock (0.1s)", "fast": "⚖ Fast Local (10 steps)", "production": "⭐ Production (Full + Critic)"}[x]
+  )
 
   st.divider()
   api_key = st.text_input("Gemini API Key", type="password")
@@ -66,29 +68,34 @@ if st.button("Generate / Resume Reel"):
     "duration": duration,
     "style": style,
     "platform": platform,
-    "voice_gender": voice
+    "voice_gender": voice,
+    "dev_mode": dev_mode,
+    "run_dir": run_dir
   }
 
   progress_bar = st.progress(0)
   status_text = st.empty()
 
   try:
-    status_text.text("Creative Agents are processing...")
+    status_text.text("Creative Agents are processing workflow (including images)...")
 
-    # Resume logic: pass None if we already started a reel on this thread
-    final_state = reel_app.invoke(
-      initial_state if not st.session_state.reel_started else None,
-      config=config
-    )
+    current_state = reel_app.get_state(config)
+
+    if not current_state.values:
+      final_state = reel_app.invoke(initial_state, config=config)
+    elif current_state.next:
+      final_state = reel_app.invoke(None, config=config)
+    else:
+      final_state = current_state.values
+
     st.session_state.reel_started = True
-    progress_bar.progress(25)
+    progress_bar.progress(50)
 
     scenes = final_state["image_prompts"]
 
     with st.expander("View Agent Outputs", expanded=False):
       st.json(scenes)
 
-    img_gen = get_image_generator()
     vid_builder = VideoBuilder(
       run_dir=run_dir,
       elevenlabs_api_key=eleven_key,
@@ -97,15 +104,11 @@ if st.button("Generate / Resume Reel"):
     )
 
     for idx, scene in enumerate(scenes):
-      status_text.text(f"Visual Director AI generating image for scene {scene['scene']}...")
-      if not os.path.exists(os.path.join(run_dir, "images", f"scene_{scene['scene']}.png")):
-        img_gen.generate(scene["image_prompt"], run_dir, f"scene_{scene['scene']}")
-
       status_text.text(f"Voice Director AI generating audio for scene {scene['scene']}...")
       if not os.path.exists(os.path.join(run_dir, "audio", f"scene_{scene['scene']}.mp3")):
         vid_builder.generate_voice(scene["voice"], f"scene_{scene['scene']}", voice)
 
-      progress_bar.progress(25 + int(50 * ((idx + 1) / len(scenes))))
+      progress_bar.progress(50 + int(40 * ((idx + 1) / len(scenes))))
 
     status_text.text("Video Editor AI assembling the final reel...")
     output_mp4 = vid_builder.assemble(scenes)

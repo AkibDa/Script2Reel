@@ -4,12 +4,11 @@ import os
 import pysrt
 import random
 from moviepy import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_videoclips, CompositeVideoClip
-from moviepy.video.fx import Crop, Resize
+from moviepy.video.fx import Resize
 from moviepy.audio.fx import MultiplyVolume
 from elevenlabs.client import ElevenLabs
 from elevenlabs import save
 from gtts import gTTS
-from moviepy import VideoFileClip
 
 
 class VideoBuilder:
@@ -80,7 +79,7 @@ class VideoBuilder:
     if base_clip.w / base_clip.h > 1080 / 1920:
       bg_clip = self._create_blurred_background(image_path, duration)
       fg_clip = base_clip.with_effects([Resize(width=1080)])
-      fg_clip = fg_clip.set_position("center")
+      fg_clip = fg_clip.with_position("center")
       clip = CompositeVideoClip([bg_clip, fg_clip])
     else:
       clip = base_clip.with_effects([Resize(height=1920)])
@@ -112,7 +111,7 @@ class VideoBuilder:
       cy, cx = h // 2, w // 2
       return get_frame(t)[cy - target_h // 2:cy + target_h // 2, cx - target_w // 2:cx + target_w // 2]
 
-    return clip.fl(effect_func)
+    return clip.transform(effect_func)
 
   def assemble(self, scene_data: list, output_filename: str = "final_reel.mp4"):
     video_clips = []
