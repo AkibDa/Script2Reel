@@ -94,7 +94,7 @@ class VideoBuilder:
 
       if motion_type == "zoom_in":
         scale = 1 + (zoom_factor - 1) * p
-        frame = Resize(lambda _: scale)(clip).get_frame(t)
+        frame = clip.with_effects([Resize(scale)]).get_frame(t)
         cy, cx = frame.shape[0] // 2, frame.shape[1] // 2
         return frame[cy - target_h // 2:cy + target_h // 2, cx - target_w // 2:cx + target_w // 2]
 

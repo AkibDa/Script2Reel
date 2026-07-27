@@ -3,7 +3,7 @@
 import os
 import base64
 import concurrent.futures
-from typing import TypedDict, List, Dict, Any
+from typing import TypedDict, List, Dict, Any, Literal
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -20,11 +20,14 @@ class ReelState(TypedDict):
   platform: str
   voice_gender: str
   refined_prompt: str
+  creative_brief: Dict[str, Any]
   screenplay: str
   scene_json: List[Dict[str, Any]]
   image_prompts: List[Dict[str, Any]]
   run_dir: str
   dev_mode: str
+  is_consistent: bool
+  reviewer_feedback: str
 
 
 _llm_instance = None
@@ -38,6 +41,12 @@ def get_llm():
       max_retries=3
     )
   return _llm_instance
+
+
+def check_consistency(state: ReelState) -> Literal["subject_extractor", "screenplay"]:
+  if state.get("is_consistent", True):
+    return "subject_extractor"
+  return "screenplay"
 
 
 def extract_text(response) -> str:
@@ -71,13 +80,18 @@ def prompt_refiner_agent(state: ReelState) -> ReelState:
 
 def screenplay_agent(state: ReelState) -> ReelState:
   print("[graph] screenplay starting...")
+
+  feedback_context = f"\nREVISION FEEDBACK: {state.get('reviewer_feedback')}" if state.get("reviewer_feedback") else ""
+
   prompt = ChatPromptTemplate.from_messages([
     ("system",
-     "You are a Screenplay Agent. Break the refined brief down into scenes. Include narration text, visual description, camera angle, and transition for each."),
-    ("user", "Brief: {refined_prompt}")
+     "You are a Screenplay Agent. Write a script based STRICTLY on the provided Creative Brief (Story Bible). "
+     "Do not deviate from the specified analogy, character, or setting."),
+    ("user", "Creative Brief: {creative_brief}\nDuration: {duration}s{feedback}")
   ])
+
   chain = prompt | get_llm()
-  response = chain.invoke(state)
+  response = chain.invoke({**state, "feedback": feedback_context})
   print("[graph] screenplay done")
   return {"screenplay": extract_text(response)}
 
@@ -149,6 +163,68 @@ def subject_extractor_agent(state: ReelState) -> ReelState:
 
   print("[graph] subject_extractor done")
   return {"scene_json": updated_scenes}
+
+
+class Concept(BaseModel):
+  analogy: str = Field(description="The core metaphor or analogy")
+  main_character: str = Field(description="The specific subject/character")
+  setting: str = Field(description="The primary visual location")
+  visual_style: str = Field(description="The art direction")
+  originality_score: int = Field(description="Score 1-5 for how surprising/novel it is")
+  visual_potential: int = Field(description="Score 1-5 for how good it will look")
+
+
+class ConceptList(BaseModel):
+  concepts: List[Concept]
+
+
+class ConsistencyCheck(BaseModel):
+  is_consistent: bool = Field(description="True if the scenes perfectly match the creative brief")
+  feedback: str = Field(description="Critique if inconsistent, or empty if perfect")
+
+
+def creative_director_agent(state: ReelState) -> ReelState:
+  print("[graph] creative_director starting...")
+  prompt = ChatPromptTemplate.from_messages([
+    ("system",
+     "You are a Creative Director. Generate 5 wildly different, highly original concepts to explain the user's prompt. "
+     "Avoid ALL common textbook analogies, cars, recipes, blueprints, or basic office settings. "
+     "Prioritize visual storytelling, surprise, and humor. Format as a strict list of 5 concepts."),
+    ("user", "Topic: {raw_prompt}\nTarget Style: {style}")
+  ])
+
+  structured_llm = get_llm().with_structured_output(ConceptList)
+  response = (prompt | structured_llm).invoke(state)
+
+  # Deterministic Selection: Rank by combined score
+  sorted_concepts = sorted(
+    response.concepts,
+    key=lambda x: x.originality_score + x.visual_potential,
+    reverse=True
+  )
+  best_concept = sorted_concepts[0].model_dump()
+
+  print(f"[graph] selected concept: {best_concept['analogy']}")
+  return {"creative_brief": best_concept}
+
+
+def consistency_reviewer_agent(state: ReelState) -> ReelState:
+  print("[graph] reviewer starting...")
+  prompt = ChatPromptTemplate.from_messages([
+    ("system",
+     "You are a Continuity Director. Compare the generated scenes against the Creative Brief (Story Bible). "
+     "If the scenes drift from the analogy, introduce unrelated elements, or break continuity, reject it (is_consistent = false) and provide strict feedback."),
+    ("user", "Creative Brief:\n{creative_brief}\n\nGenerated Scenes:\n{scene_json}")
+  ])
+
+  structured_llm = get_llm().with_structured_output(ConsistencyCheck)
+  review = (prompt | structured_llm).invoke(state)
+
+  print(f"[graph] reviewer decision: Consistent={review.is_consistent}")
+  return {
+    "is_consistent": review.is_consistent,
+    "reviewer_feedback": review.feedback
+  }
 
 
 class StructuredPrompt(BaseModel):
@@ -253,17 +329,25 @@ def image_generation_and_critic_agent(state: ReelState) -> ReelState:
 
 
 workflow = StateGraph(ReelState)
-workflow.add_node("refiner", prompt_refiner_agent)
+
+workflow.add_node("creative_director", creative_director_agent)
 workflow.add_node("screenplay", screenplay_agent)
 workflow.add_node("planner", scene_planner_agent)
+workflow.add_node("reviewer", consistency_reviewer_agent)
 workflow.add_node("subject_extractor", subject_extractor_agent)
 workflow.add_node("visual_director", visual_director_agent)
 workflow.add_node("image_production", image_generation_and_critic_agent)
 
-workflow.set_entry_point("refiner")
-workflow.add_edge("refiner", "screenplay")
+workflow.set_entry_point("creative_director")
+workflow.add_edge("creative_director", "screenplay")
 workflow.add_edge("screenplay", "planner")
-workflow.add_edge("planner", "subject_extractor")
+workflow.add_edge("planner", "reviewer")
+
+workflow.add_conditional_edges(
+    "reviewer",
+    check_consistency
+)
+
 workflow.add_edge("subject_extractor", "visual_director")
 workflow.add_edge("visual_director", "image_production")
 workflow.add_edge("image_production", END)
