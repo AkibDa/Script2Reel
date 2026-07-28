@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Script2Reel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+
+  <header class="hero">
+    <div class="hero__copy">
+      <p class="brand">Script2Reel</p>
+      <h1>From script to vertical reel.</h1>
+      <p class="lede">One prompt becomes scenes, voice, and a finished short for Reels, TikTok, or Shorts.</p>
+      <div class="hero__cta">
+        <a class="btn btn--primary" href="#studio">Start creating</a>
+      </div>
+    </div>
+
+    <div class="hero__visual" aria-hidden="true">
+      <div class="phone">
+        <div class="phone__bezel">
+          <div class="phone__screen">
+            <div class="reel-frames">
+              <div class="reel-frame reel-frame--1"></div>
+              <div class="reel-frame reel-frame--2"></div>
+              <div class="reel-frame reel-frame--3"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section id="studio" class="studio">
+      <div class="section-head">
+        <h2>Create a reel</h2>
+        <p>Same controls as before — prompt, format, keys, then generate.</p>
+      </div>
+
+      <form id="reel-form" class="studio-form">
+        <div class="field-block">
+          <h3>Story</h3>
+          <label class="field">
+            <span>What is your reel about?</span>
+            <textarea id="prompt" name="prompt" rows="4" required>A motivational reel about discipline.</textarea>
+          </label>
+        </div>
+
+        <div class="field-block">
+          <h3>Format</h3>
+          <div class="grid">
+            <label class="field">
+              <span>Duration</span>
+              <select id="duration" name="duration">
+                <option value="15">15 seconds</option>
+                <option value="30" selected>30 seconds</option>
+                <option value="60">60 seconds</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Style</span>
+              <select id="style" name="style">
+                <option>Motivational</option>
+                <option>Educational</option>
+                <option>Cinematic</option>
+                <option>Documentary</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Platform</span>
+              <select id="platform" name="platform">
+                <option>Instagram Reels</option>
+                <option>TikTok</option>
+                <option>YouTube Shorts</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Voice</span>
+              <select id="voice" name="voice">
+                <option>Male</option>
+                <option>Female</option>
+              </select>
+            </label>
+          </div>
+
+          <fieldset class="mode">
+            <legend>Generation mode</legend>
+            <div class="mode__options">
+              <label class="mode__option">
+                <input type="radio" name="dev_mode" value="mock" checked />
+                <span>
+                  <strong>Mock</strong>
+                  <small>Instant placeholders</small>
+                </span>
+              </label>
+              <label class="mode__option">
+                <input type="radio" name="dev_mode" value="fast" />
+                <span>
+                  <strong>Fast local</strong>
+                  <small>10 diffusion steps</small>
+                </span>
+              </label>
+              <label class="mode__option">
+                <input type="radio" name="dev_mode" value="production" />
+                <span>
+                  <strong>Production</strong>
+                  <small>Full quality + critic</small>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+        </div>
+
+        <div class="field-block">
+          <h3>Keys &amp; audio</h3>
+          <div class="grid">
+            <label class="field">
+              <span>Gemini API key</span>
+              <input id="api_key" name="api_key" type="password" required autocomplete="off" placeholder="Required" />
+            </label>
+            <label class="field">
+              <span>ElevenLabs API key</span>
+              <input id="eleven_key" name="eleven_key" type="password" autocomplete="off" placeholder="Optional" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span>Background music</span>
+            <input id="bg_music" name="bg_music" type="file" accept=".mp3,.wav,audio/mpeg,audio/wav" />
+          </label>
+
+          <label class="field field--range">
+            <span>Music volume <em id="duck_volume_value">0.10</em></span>
+            <input id="duck_volume" name="duck_volume" type="range" min="0" max="1" step="0.05" value="0.1" />
+          </label>
+        </div>
+
+        <div class="actions">
+          <button type="submit" id="generate-btn" class="btn btn--primary">Generate / Resume Reel</button>
+          <button type="button" id="reset-btn" class="btn btn--ghost">Reset / Start New Reel</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="progress-panel" class="status-panel hidden">
+      <div class="section-head">
+        <h2>Progress</h2>
+        <p id="status-text">Queued</p>
+      </div>
+      <div class="progress-track">
+        <div id="progress-bar" class="progress-fill" style="width: 0%"></div>
+      </div>
+      <p id="error-text" class="error hidden"></p>
+      <button type="button" id="retry-btn" class="btn btn--ghost hidden">Retry</button>
+    </section>
+
+    <section id="result-panel" class="result-panel hidden">
+      <div class="section-head">
+        <h2>Your reel</h2>
+        <p>Preview, download, or inspect agent scene output.</p>
+      </div>
+
+      <div class="result-layout">
+        <div class="result-phone">
+          <video id="result-video" controls playsinline></video>
+        </div>
+        <div class="result-side">
+          <div class="actions">
+            <a id="download-mp4" class="btn btn--primary" href="#" download="final_reel.mp4">Download MP4</a>
+            <a id="download-srt" class="btn btn--ghost" href="#" download="subtitles.srt">Download Subtitles</a>
+          </div>
+          <details id="agent-outputs" class="agent-outputs">
+            <summary>View agent outputs</summary>
+            <pre id="agent-outputs-json"></pre>
+          </details>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span class="brand brand--footer">Script2Reel</span>
+    <span>Prompt in. Vertical reel out.</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
