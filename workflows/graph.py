@@ -1,4 +1,4 @@
-#workflows/graph.py
+# workflows/graph.py
 
 import os
 import base64
@@ -8,9 +8,10 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 from services.image_provider import get_image_provider
+from services.prompt_loader import load_prompt
 
 
 class ReelState(TypedDict):
@@ -80,15 +81,11 @@ def prompt_refiner_agent(state: ReelState) -> ReelState:
 
 def screenplay_agent(state: ReelState) -> ReelState:
   print("[graph] screenplay starting...")
-
+  system_spec = load_prompt("screenwriter")
   feedback_context = f"\nREVISION FEEDBACK: {state.get('reviewer_feedback')}" if state.get("reviewer_feedback") else ""
 
   prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are a Screenplay Agent. Write a script based STRICTLY on the provided Creative Brief (Story Bible). "
-     "Do not deviate from the specified analogy, character, or setting. "
-     "Write FULL spoken voiceover lines for each beat — complete sentences the narrator will say aloud. "
-     "Never use single-word labels or keyword stubs as dialogue."),
+    ("system", system_spec),
     ("user", "Creative Brief: {creative_brief}\nDuration: {duration}s{feedback}")
   ])
 
@@ -124,19 +121,15 @@ class SceneList(BaseModel):
 
 def scene_planner_agent(state: ReelState) -> ReelState:
   print("[graph] planner starting...")
+  system_spec = load_prompt("scene_planner")
   prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are a Scene Planner Agent. Convert the screenplay into structured scenes. "
-     "PRESERVE information — do not summarize narration into keywords. "
-     "Each scene must include: full spoken narration (copied/adapted from the screenplay as a complete sentence), "
-     "a short summary (purpose only), visual, duration, and effect. "
-     "Narration will be read aloud and shown as subtitles; it must stay a full sentence (8–20 words). "
-     "Stay faithful to the Creative Brief (Story Bible)."),
+    ("system", system_spec),
     ("user",
      "Creative Brief (Story Bible): {creative_brief}\n\n"
      "Screenplay:\n{screenplay}\n\n"
      "Total duration must be exactly {duration} seconds.")
   ])
+
   structured_llm = get_llm().with_structured_output(SceneList)
   chain = prompt | structured_llm
   response = chain.invoke(state)
@@ -182,10 +175,9 @@ def _extract_subject(scene: dict, prompt: ChatPromptTemplate, structured_llm) ->
 
 def subject_extractor_agent(state: ReelState) -> ReelState:
   print("[graph] subject_extractor starting...")
+  system_spec = load_prompt("subject_extractor")
   prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     "Extract the literal, concrete subjects from the scene description. Ignore abstract concepts. "
-     "Use the narration and visual together — do not discard the narration."),
+    ("system", system_spec),
     ("user",
      "Narration (spoken line): {narration}\n"
      "Beat summary: {summary}\n"
@@ -221,12 +213,9 @@ class ConsistencyCheck(BaseModel):
 
 def creative_director_agent(state: ReelState) -> ReelState:
   print("[graph] creative_director starting...")
+  system_spec = load_prompt("creative_director")
   prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are a Creative Director. Generate 5 wildly different, highly original concepts to explain the user's prompt. "
-     "Hard avoid (overused): blueprint, recipe, house blueprint, cars/Ferrari as default OOP metaphor, basic office. "
-     "Prefer surprising, visual worlds when they fit (e.g. Pokemon, Minecraft, Lego, Iron Man suit shop, clone factory, magic spell). "
-     "Prioritize visual storytelling, surprise, and humor. Format as a strict list of 5 concepts."),
+    ("system", system_spec),
     ("user", "Topic: {raw_prompt}\nTarget Style: {style}")
   ])
 
@@ -247,11 +236,9 @@ def creative_director_agent(state: ReelState) -> ReelState:
 
 def consistency_reviewer_agent(state: ReelState) -> ReelState:
   print("[graph] reviewer starting...")
+  system_spec = load_prompt("reviewer")
   prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are a Continuity Director. Compare the generated scenes against the Creative Brief (Story Bible). "
-     "If the scenes drift from the analogy, introduce unrelated elements, or break continuity, reject it (is_consistent = false) and provide strict feedback. "
-     "Also reject if any scene narration is missing, a single keyword, or not a complete spoken sentence."),
+    ("system", system_spec),
     ("user", "Creative Brief:\n{creative_brief}\n\nGenerated Scenes:\n{scene_json}")
   ])
 
@@ -272,21 +259,20 @@ class StructuredPrompt(BaseModel):
   camera: str
   style_keywords: str
   lighting: str
+  steps: int = Field(description="Inference steps: 20-25 for simple styles, 30-40 for detailed/cinematic")
+  cfg_scale: float = Field(description="CFG scale: 5.5-6.5 for artistic freedom, 8.0-9.0 for strict prompt adherence")
+  negative_prompt: str = Field(
+    description="Specific negative prompt tailored to the style (e.g., 'cartoon' for realistic styles)")
+  seed: int = Field(description="Random seed for reproducibility, e.g., 12345")
 
 
 def _build_image_prompt(scene: dict, style: str) -> dict:
+  system_spec = load_prompt("visual_director")
   prompt = ChatPromptTemplate.from_messages([
-    ("system",
-     "You are a Visual Director Agent for a text-to-image model with a strict "
-     "77-token limit. Using the extracted subject data, produce a strict image "
-     "generation template. The image MUST clearly depict the literal subject/action/"
-     "setting given — do not invent unrelated symbolism, characters, or genre "
-     "aesthetics (e.g. don't turn a technical/educational topic into cyberpunk/sci-fi "
-     "imagery) unless the subject data explicitly calls for it. "
-     "Style requested: {style}. Match it accurately (e.g. 'Educational' = flat vector "
-     "illustration, 'Cinematic' = 35mm shallow depth of field)."),
-    ("user", "Subject data: {subject_data}")
+    ("system", system_spec),
+    ("user", "Subject data: {subject_data}\nTarget Style: {style}")
   ])
+
   structured_llm = get_llm().with_structured_output(StructuredPrompt)
   res = (prompt | structured_llm).invoke({
     "style": style,
@@ -300,6 +286,10 @@ def _build_image_prompt(scene: dict, style: str) -> dict:
 
   enhanced_scene = scene.copy()
   enhanced_scene["image_prompt"] = " ".join(final_prompt.split()[:60])
+  enhanced_scene["steps"] = res.steps
+  enhanced_scene["cfg_scale"] = res.cfg_scale
+  enhanced_scene["negative_prompt"] = res.negative_prompt
+  enhanced_scene["seed"] = res.seed
   return enhanced_scene
 
 
@@ -331,16 +321,25 @@ def image_generation_and_critic_agent(state: ReelState) -> ReelState:
   for scene in state["image_prompts"]:
     candidates = []
     for i in range(candidates_count):
-      path = provider.generate(scene["image_prompt"], run_dir, f"scene_{scene['scene']}_cand_{i}")
+      path = provider.generate(
+        scene["image_prompt"],
+        run_dir,
+        f"scene_{scene['scene']}_cand_{i}",
+        steps=scene.get("steps"),
+        cfg_scale=scene.get("cfg_scale"),
+        negative_prompt=scene.get("negative_prompt"),
+        seed=scene.get("seed") + i if scene.get("seed") else None
+      )
       candidates.append(path)
 
     if candidates_count == 1:
       best_img = candidates[0]
     else:
+      system_spec = load_prompt("image_critic")
       messages = [
+        SystemMessage(content=system_spec),
         HumanMessage(content=[
-          {"type": "text",
-           "text": f"Narration: {scene.get('narration') or scene.get('voice')}\nWhich of these 3 images best matches the narration and is visually clearest? Return ONLY the number 1, 2, or 3."},
+          {"type": "text", "text": f"Narration: {scene.get('narration') or scene.get('voice')}"},
           {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(candidates[0])}"}},
           {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(candidates[1])}"}},
           {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(candidates[2])}"}}
@@ -382,8 +381,8 @@ workflow.add_edge("screenplay", "planner")
 workflow.add_edge("planner", "reviewer")
 
 workflow.add_conditional_edges(
-    "reviewer",
-    check_consistency
+  "reviewer",
+  check_consistency
 )
 
 workflow.add_edge("subject_extractor", "visual_director")

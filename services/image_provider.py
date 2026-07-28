@@ -52,15 +52,26 @@ class LocalSDXLProvider:
       self.pipe.enable_attention_slicing()
       self.pipe.enable_model_cpu_offload()
 
-  def generate(self, prompt: str, run_dir: str, filename: str) -> str:
+
+  def generate(self, prompt: str, run_dir: str, filename: str, **kwargs) -> str:
+    steps = kwargs.get("steps", self.steps)
+    cfg_scale = kwargs.get("cfg_scale", self.cfg_scale)
+    negative_prompt = kwargs.get("negative_prompt", self.negative_prompt)
+    seed = kwargs.get("seed", None)
+
+    generator = None
+    if seed is not None:
+      generator = torch.Generator(device=self.device).manual_seed(seed)
+
     with self.lock:
       image = self.pipe(
         prompt=prompt,
-        negative_prompt=self.negative_prompt,
+        negative_prompt=negative_prompt,
         height=self.height,
         width=self.width,
-        num_inference_steps=self.steps,
-        guidance_scale=self.cfg_scale
+        num_inference_steps=steps,
+        guidance_scale=cfg_scale,
+        generator=generator
       ).images[0]
 
     target_dir = os.path.join(run_dir, "images")
