@@ -6,6 +6,7 @@ import uuid
 import traceback
 from workflows.graph import reel_app
 from services.video_builder import VideoBuilder
+from services.scene_utils import scene_narration
 
 st.set_page_config(page_title="Script2Reel | AI Creative Studio", layout="wide")
 
@@ -106,7 +107,10 @@ if st.button("Generate / Resume Reel"):
     for idx, scene in enumerate(scenes):
       status_text.text(f"Voice Director AI generating audio for scene {scene['scene']}...")
       if not os.path.exists(os.path.join(run_dir, "audio", f"scene_{scene['scene']}.mp3")):
-        vid_builder.generate_voice(scene["voice"], f"scene_{scene['scene']}", voice)
+        narration = scene_narration(scene)
+        if not narration:
+          raise ValueError(f"Scene {scene['scene']} has empty narration — cannot generate voice/subtitles.")
+        vid_builder.generate_voice(narration, f"scene_{scene['scene']}", voice)
 
       progress_bar.progress(50 + int(40 * ((idx + 1) / len(scenes))))
 

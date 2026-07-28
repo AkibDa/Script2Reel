@@ -9,6 +9,7 @@ from moviepy.audio.fx import MultiplyVolume
 from elevenlabs.client import ElevenLabs
 from elevenlabs import save
 from gtts import gTTS
+from services.scene_utils import scene_narration
 
 
 class VideoBuilder:
@@ -19,6 +20,10 @@ class VideoBuilder:
     self.duck_volume = duck_volume
 
   def generate_voice(self, text: str, filename: str, voice_gender: str) -> str:
+    text = (text or "").strip()
+    if not text or text.lower() in ("none", "null"):
+      raise ValueError(f"Cannot generate voice for '{filename}': narration is empty.")
+
     target_dir = os.path.join(self.run_dir, "audio")
     os.makedirs(target_dir, exist_ok=True)
     filepath = os.path.join(target_dir, f"{filename}.mp3")
@@ -45,12 +50,17 @@ class VideoBuilder:
     for scene in scene_data:
       start_time = current_time_sec
       end_time = current_time_sec + scene['duration']
+      text = scene_narration(scene)
+      if not text:
+        print(f"[video_builder] WARNING empty narration for scene {scene.get('scene')}; skipping subtitle cue")
+        current_time_sec = end_time
+        continue
 
       sub = pysrt.SubRipItem(
         index=scene['scene'],
         start=pysrt.SubRipTime(seconds=start_time),
         end=pysrt.SubRipTime(seconds=end_time),
-        text=scene['voice']
+        text=text
       )
       subs.append(sub)
       current_time_sec = end_time

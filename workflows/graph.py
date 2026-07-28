@@ -86,7 +86,9 @@ def screenplay_agent(state: ReelState) -> ReelState:
   prompt = ChatPromptTemplate.from_messages([
     ("system",
      "You are a Screenplay Agent. Write a script based STRICTLY on the provided Creative Brief (Story Bible). "
-     "Do not deviate from the specified analogy, character, or setting."),
+     "Do not deviate from the specified analogy, character, or setting. "
+     "Write FULL spoken voiceover lines for each beat — complete sentences the narrator will say aloud. "
+     "Never use single-word labels or keyword stubs as dialogue."),
     ("user", "Creative Brief: {creative_brief}\nDuration: {duration}s{feedback}")
   ])
 
@@ -97,11 +99,23 @@ def screenplay_agent(state: ReelState) -> ReelState:
 
 
 class Scene(BaseModel):
-  scene: int
-  duration: int
-  visual: str
-  voice: str
-  effect: str
+  scene: int = Field(description="1-based scene index")
+  narration: str = Field(
+    description=(
+      "Complete spoken voiceover sentence for this beat. "
+      "8–20 words. This text becomes TTS audio AND subtitles. "
+      "Never keywords, labels, or one-word stubs (e.g. not 'Blueprint' or 'Ferrari')."
+    )
+  )
+  summary: str = Field(
+    description=(
+      "Short beat purpose only (e.g. 'Hook', 'Introduce analogy'). "
+      "Must NOT replace or shorten narration."
+    )
+  )
+  visual: str = Field(description="What appears on screen this beat — concrete and filmable")
+  duration: int = Field(description="Length of this scene in seconds")
+  effect: str = Field(description="Camera/motion effect, e.g. zoom in, pan left")
 
 
 class SceneList(BaseModel):
@@ -111,8 +125,17 @@ class SceneList(BaseModel):
 def scene_planner_agent(state: ReelState) -> ReelState:
   print("[graph] planner starting...")
   prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a Scene Planner Agent. Convert the screenplay into a strict JSON array of scenes."),
-    ("user", "Screenplay: {screenplay}\nMake sure total duration is exactly {duration} seconds.")
+    ("system",
+     "You are a Scene Planner Agent. Convert the screenplay into structured scenes. "
+     "PRESERVE information — do not summarize narration into keywords. "
+     "Each scene must include: full spoken narration (copied/adapted from the screenplay as a complete sentence), "
+     "a short summary (purpose only), visual, duration, and effect. "
+     "Narration will be read aloud and shown as subtitles; it must stay a full sentence (8–20 words). "
+     "Stay faithful to the Creative Brief (Story Bible)."),
+    ("user",
+     "Creative Brief (Story Bible): {creative_brief}\n\n"
+     "Screenplay:\n{screenplay}\n\n"
+     "Total duration must be exactly {duration} seconds.")
   ])
   structured_llm = get_llm().with_structured_output(SceneList)
   chain = prompt | structured_llm
@@ -130,6 +153,11 @@ def scene_planner_agent(state: ReelState) -> ReelState:
     for s in scenes:
       s["duration"] = max(1, round(s["duration"] * factor))
 
+  for s in scenes:
+    words = (s.get("narration") or "").split()
+    if len(words) < 6:
+      print(f"[graph] WARNING short narration on scene {s.get('scene')}: {s.get('narration')!r}")
+
   print("[graph] planner done")
   return {"scene_json": scenes}
 
@@ -142,9 +170,12 @@ class SceneSubject(BaseModel):
 
 
 def _extract_subject(scene: dict, prompt: ChatPromptTemplate, structured_llm) -> dict:
+  scene = scene.copy()
+  if not scene.get("narration"):
+    scene["narration"] = scene.get("voice") or ""
+  scene.setdefault("summary", "")
   chain = prompt | structured_llm
   subject_data = chain.invoke(scene)
-  scene = scene.copy()
   scene["subject_data"] = subject_data.model_dump()
   return scene
 
@@ -152,8 +183,13 @@ def _extract_subject(scene: dict, prompt: ChatPromptTemplate, structured_llm) ->
 def subject_extractor_agent(state: ReelState) -> ReelState:
   print("[graph] subject_extractor starting...")
   prompt = ChatPromptTemplate.from_messages([
-    ("system", "Extract the literal, concrete subjects from the scene description. Ignore abstract concepts."),
-    ("user", "Scene script: {voice}\nVisual concept: {visual}")
+    ("system",
+     "Extract the literal, concrete subjects from the scene description. Ignore abstract concepts. "
+     "Use the narration and visual together — do not discard the narration."),
+    ("user",
+     "Narration (spoken line): {narration}\n"
+     "Beat summary: {summary}\n"
+     "Visual concept: {visual}")
   ])
   structured_llm = get_llm().with_structured_output(SceneSubject)
 
@@ -188,7 +224,8 @@ def creative_director_agent(state: ReelState) -> ReelState:
   prompt = ChatPromptTemplate.from_messages([
     ("system",
      "You are a Creative Director. Generate 5 wildly different, highly original concepts to explain the user's prompt. "
-     "Avoid ALL common textbook analogies, cars, recipes, blueprints, or basic office settings. "
+     "Hard avoid (overused): blueprint, recipe, house blueprint, cars/Ferrari as default OOP metaphor, basic office. "
+     "Prefer surprising, visual worlds when they fit (e.g. Pokemon, Minecraft, Lego, Iron Man suit shop, clone factory, magic spell). "
      "Prioritize visual storytelling, surprise, and humor. Format as a strict list of 5 concepts."),
     ("user", "Topic: {raw_prompt}\nTarget Style: {style}")
   ])
@@ -213,7 +250,8 @@ def consistency_reviewer_agent(state: ReelState) -> ReelState:
   prompt = ChatPromptTemplate.from_messages([
     ("system",
      "You are a Continuity Director. Compare the generated scenes against the Creative Brief (Story Bible). "
-     "If the scenes drift from the analogy, introduce unrelated elements, or break continuity, reject it (is_consistent = false) and provide strict feedback."),
+     "If the scenes drift from the analogy, introduce unrelated elements, or break continuity, reject it (is_consistent = false) and provide strict feedback. "
+     "Also reject if any scene narration is missing, a single keyword, or not a complete spoken sentence."),
     ("user", "Creative Brief:\n{creative_brief}\n\nGenerated Scenes:\n{scene_json}")
   ])
 
@@ -302,7 +340,7 @@ def image_generation_and_critic_agent(state: ReelState) -> ReelState:
       messages = [
         HumanMessage(content=[
           {"type": "text",
-           "text": f"Narration: {scene['voice']}\nWhich of these 3 images best matches the narration and is visually clearest? Return ONLY the number 1, 2, or 3."},
+           "text": f"Narration: {scene.get('narration') or scene.get('voice')}\nWhich of these 3 images best matches the narration and is visually clearest? Return ONLY the number 1, 2, or 3."},
           {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(candidates[0])}"}},
           {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(candidates[1])}"}},
           {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encode_image(candidates[2])}"}}
