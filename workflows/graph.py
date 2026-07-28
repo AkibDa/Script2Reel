@@ -21,6 +21,7 @@ class ReelState(TypedDict):
   platform: str
   voice_gender: str
   refined_prompt: str
+  intent: str
   creative_brief: Dict[str, Any]
   screenplay: str
   scene_json: List[Dict[str, Any]]
@@ -140,11 +141,11 @@ def scene_planner_agent(state: ReelState) -> ReelState:
   if len(scenes) > max_scenes:
     scenes = scenes[:max_scenes]
 
-  total_planned = sum(s["duration"] for s in scenes)
-  if total_planned != state["duration"] and total_planned > 0:
-    factor = state["duration"] / total_planned
-    for s in scenes:
-      s["duration"] = max(1, round(s["duration"] * factor))
+  # total_planned = sum(s["duration"] for s in scenes)
+  # if total_planned != state["duration"] and total_planned > 0:
+  #   factor = state["duration"] / total_planned
+  #   for s in scenes:
+  #     s["duration"] = max(1, round(s["duration"] * factor))
 
   for s in scenes:
     words = (s.get("narration") or "").split()
@@ -153,6 +154,74 @@ def scene_planner_agent(state: ReelState) -> ReelState:
 
   print("[graph] planner done")
   return {"scene_json": scenes}
+
+
+class IntentClassification(BaseModel):
+  intent: Literal["educational", "creative"] = Field(
+    description="Classify as 'educational' for factual explanations, coding concepts, or direct tutorials. Classify as 'creative' for storytelling, fantasy, or if the user explicitly asks for an analogy."
+  )
+  explanation_style: str = Field(description="Suggested style: 'direct', 'analogy', 'story', 'humorous'")
+
+
+def intent_classifier_agent(state: ReelState) -> ReelState:
+  print("[graph] intent_classifier starting...")
+  prompt = ChatPromptTemplate.from_messages([
+    ("system", (
+      "You are an Intent Classifier for a short-form video pipeline. "
+      "Analyze the user's prompt. If they want a factual explanation, tutorial, "
+      "or technical breakdown, output 'educational'. If they want a narrative, "
+      "fantasy, or creative story, output 'creative'."
+    )),
+    ("user", "Prompt: {raw_prompt}")
+  ])
+
+  structured_llm = get_llm().with_structured_output(IntentClassification)
+  result = (prompt | structured_llm).invoke(state)
+
+  print(f"[graph] classified intent: {result.intent} ({result.explanation_style})")
+  return {"intent": result.intent}
+
+
+def route_by_intent(state: ReelState) -> Literal["educational_writer", "creative_director"]:
+  """The routing function for LangGraph's conditional edge."""
+  if state.get("intent") == "educational":
+    return "educational_writer"
+  return "creative_director"
+
+
+def educational_writer_agent(state: ReelState) -> ReelState:
+  print("[graph] educational_writer starting...")
+  system_spec = (
+    "You are an Educational Screenwriter. Write a direct, clear, and factual script for a short video.\n"
+    "RULES:\n"
+    "- Do NOT use fantasy, magic, or elaborate stories.\n"
+    "- Use simple, precise language.\n"
+    "- Structure the script: 1. Strong Hook, 2. Core Concept, 3. Real-world Example, 4. Summary.\n"
+    "- Ensure pacing fits the target duration."
+  )
+
+  prompt = ChatPromptTemplate.from_messages([
+    ("system", system_spec),
+    ("user", "Topic: {raw_prompt}\nDuration: {duration}s")
+  ])
+
+  chain = prompt | get_llm()
+  response = chain.invoke(state)
+
+  informational_brief = {
+    "analogy": "Direct, factual explanation",
+    "main_character": "The viewer",
+    "setting": "Clean, educational layout with text and diagrams",
+    "visual_style": state.get("style", "Minimalist and clear"),
+    "originality_score": 3,
+    "visual_potential": 4
+  }
+
+  print("[graph] educational_writer done")
+  return {
+    "screenplay": extract_text(response),
+    "creative_brief": informational_brief
+  }
 
 
 class SceneSubject(BaseModel):
@@ -367,6 +436,8 @@ def image_generation_and_critic_agent(state: ReelState) -> ReelState:
 
 workflow = StateGraph(ReelState)
 
+workflow.add_node("intent_classifier", intent_classifier_agent)
+workflow.add_node("educational_writer", educational_writer_agent)
 workflow.add_node("creative_director", creative_director_agent)
 workflow.add_node("screenplay", screenplay_agent)
 workflow.add_node("planner", scene_planner_agent)
@@ -375,16 +446,23 @@ workflow.add_node("subject_extractor", subject_extractor_agent)
 workflow.add_node("visual_director", visual_director_agent)
 workflow.add_node("image_production", image_generation_and_critic_agent)
 
-workflow.set_entry_point("creative_director")
+workflow.set_entry_point("intent_classifier")
+
+workflow.add_conditional_edges(
+  "intent_classifier",
+  route_by_intent
+)
+
+workflow.add_edge("educational_writer", "planner")
+
 workflow.add_edge("creative_director", "screenplay")
 workflow.add_edge("screenplay", "planner")
-workflow.add_edge("planner", "reviewer")
 
+workflow.add_edge("planner", "reviewer")
 workflow.add_conditional_edges(
   "reviewer",
   check_consistency
 )
-
 workflow.add_edge("subject_extractor", "visual_director")
 workflow.add_edge("visual_director", "image_production")
 workflow.add_edge("image_production", END)

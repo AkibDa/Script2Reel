@@ -16,7 +16,7 @@ class ImageProvider(Protocol):
 class MockImageProvider:
   """Generates a fast placeholder image for development testing."""
 
-  def generate(self, prompt: str, run_dir: str, filename: str) -> str:
+  def generate(self, prompt: str, run_dir: str, filename: str, **kwargs) -> str:
     target_dir = os.path.join(run_dir, "images")
     os.makedirs(target_dir, exist_ok=True)
     filepath = os.path.join(target_dir, f"{filename}.png")

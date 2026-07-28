@@ -4,7 +4,7 @@ import os
 import pysrt
 import random
 from moviepy import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_videoclips, CompositeVideoClip
-from moviepy.video.fx import Resize
+from moviepy.video.fx import Resize, CrossFadeIn
 from moviepy.audio.fx import MultiplyVolume
 from elevenlabs.client import ElevenLabs
 from elevenlabs import save
@@ -48,22 +48,30 @@ class VideoBuilder:
     current_time_sec = 0.0
 
     for scene in scene_data:
-      start_time = current_time_sec
-      end_time = current_time_sec + scene['duration']
       text = scene_narration(scene)
       if not text:
         print(f"[video_builder] WARNING empty narration for scene {scene.get('scene')}; skipping subtitle cue")
-        current_time_sec = end_time
+        current_time_sec += scene['duration']
         continue
 
-      sub = pysrt.SubRipItem(
-        index=scene['scene'],
-        start=pysrt.SubRipTime(seconds=start_time),
-        end=pysrt.SubRipTime(seconds=end_time),
-        text=text
-      )
-      subs.append(sub)
-      current_time_sec = end_time
+      words = text.split()
+      chunk_size = 4
+      chunks = [' '.join(words[i:i + chunk_size]) for i in range(0, len(words), chunk_size)]
+
+      chunk_duration = scene['duration'] / len(chunks) if chunks else scene['duration']
+
+      for chunk in chunks:
+        start_time = current_time_sec
+        end_time = current_time_sec + chunk_duration
+
+        sub = pysrt.SubRipItem(
+          index=len(subs) + 1,
+          start=pysrt.SubRipTime(seconds=start_time),
+          end=pysrt.SubRipTime(seconds=end_time),
+          text=chunk
+        )
+        subs.append(sub)
+        current_time_sec = end_time
 
     subs.save(filepath, encoding='utf-8')
     return filepath
@@ -125,10 +133,17 @@ class VideoBuilder:
 
   def assemble(self, scene_data: list, output_filename: str = "final_reel.mp4"):
     video_clips = []
+    transition_duration = 0.3
+
+    for scene in scene_data:
+      audio_path = os.path.join(self.run_dir, "audio", f"scene_{scene['scene']}.mp3")
+      if os.path.exists(audio_path):
+        a_clip = AudioFileClip(audio_path)
+        scene['duration'] = a_clip.duration + transition_duration
 
     self.generate_subtitles(scene_data)
 
-    for scene in scene_data:
+    for i, scene in enumerate(scene_data):
       img_path = os.path.join(self.run_dir, "images", f"scene_{scene['scene']}.png")
       audio_path = os.path.join(self.run_dir, "audio", f"scene_{scene['scene']}.mp3")
 
@@ -141,9 +156,16 @@ class VideoBuilder:
         a_clip = AudioFileClip(audio_path)
         v_clip = v_clip.with_audio(a_clip)
 
+      if i > 0:
+        v_clip = v_clip.with_effects([CrossFadeIn(transition_duration)])
+
       video_clips.append(v_clip)
 
-    final_video = concatenate_videoclips(video_clips, method="compose")
+    final_video = concatenate_videoclips(
+      video_clips,
+      padding=-transition_duration,
+      method="compose"
+    )
 
     if self.bg_music_path and os.path.exists(self.bg_music_path):
       bg_music = AudioFileClip(self.bg_music_path)
