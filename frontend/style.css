@@ -382,13 +382,13 @@ textarea {
 
 .generation-status-container {
   display: grid;
-  grid-template-columns: 80px 1fr;
-  gap: 1.5rem;
+  grid-template-columns: 180px 1fr;
+  gap: 2rem;
   align-items: center;
   background: rgba(255, 255, 255, 0.45);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 1.5rem;
+  padding: 2.5rem;
   margin: 1.5rem 0;
   backdrop-filter: blur(10px);
   box-shadow: 0 8px 32px rgba(20, 33, 61, 0.05);
@@ -399,19 +399,20 @@ textarea {
   justify-content: center;
   align-items: center;
   position: relative;
-  width: 54px;
-  height: 54px;
+  width: 80px;
+  height: 80px;
   flex-shrink: 0;
+  margin: 0 auto;
 }
 
 .loading-spinner {
   width: 100%;
   height: 100%;
-  border: 4px solid var(--track);
-  border-top: 4px solid var(--accent);
+  border: 6px solid var(--track);
+  border-top: 6px solid var(--accent);
   border-radius: 50%;
   animation: spin 1s linear infinite;
-  box-shadow: 0 0 12px rgba(13, 115, 119, 0.1);
+  box-shadow: 0 0 16px rgba(13, 115, 119, 0.12);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -420,19 +421,19 @@ textarea {
   border-color: var(--accent);
   background: var(--accent);
   animation: none;
-  box-shadow: 0 0 16px rgba(13, 115, 119, 0.3);
+  box-shadow: 0 0 24px rgba(13, 115, 119, 0.3);
 }
 
 .spinner-container.is-done::after {
   content: "";
   position: absolute;
-  width: 10px;
-  height: 20px;
+  width: 14px;
+  height: 28px;
   border: solid #fff;
-  border-width: 0 4px 4px 0;
-  left: 21px;
-  top: 12px;
-  transform: rotate(45deg);
+  border-width: 0 5px 5px 0;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -60%) rotate(45deg);
   z-index: 2;
   animation: scale-up-check 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
 }
@@ -442,7 +443,7 @@ textarea {
   border-color: var(--error);
   background: var(--error);
   animation: none;
-  box-shadow: 0 0 16px rgba(180, 35, 24, 0.3);
+  box-shadow: 0 0 24px rgba(180, 35, 24, 0.3);
 }
 
 .spinner-container.is-failed::after {
@@ -451,7 +452,7 @@ textarea {
   left: 50%;
   top: 50%;
   color: #fff;
-  font-size: 38px;
+  font-size: 52px;
   font-weight: 500;
   line-height: 0;
   transform: translate(-50%, -55%);
@@ -461,11 +462,11 @@ textarea {
 
 @keyframes scale-up-check {
   from {
-    transform: scale(0) rotate(45deg);
+    transform: translate(-50%, -60%) scale(0) rotate(45deg);
     opacity: 0;
   }
   to {
-    transform: scale(1) rotate(45deg);
+    transform: translate(-50%, -60%) scale(1) rotate(45deg);
     opacity: 1;
   }
 }
@@ -488,6 +489,8 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  max-width: 520px;
+  width: 100%;
 }
 
 .agent-item {
@@ -763,6 +766,34 @@ textarea {
 
   .btn {
     width: 100%;
+  }
+
+  .generation-status-container {
+    grid-template-columns: 1fr;
+    gap: 1.25rem;
+    justify-items: center;
+    padding: 1rem;
+    margin: 1rem auto;
+    max-width: 100%;
+  }
+
+  .agent-list {
+    width: 100%;
+    gap: 0.6rem;
+  }
+
+  .agent-item {
+    font-size: 0.88rem;
+    gap: 0.5rem;
+  }
+
+  .agent-icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .agent-status {
+    font-size: 0.72rem;
   }
 }
 
