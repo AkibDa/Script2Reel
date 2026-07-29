@@ -3,19 +3,19 @@
 import os
 import pysrt
 import random
-from moviepy import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_videoclips, CompositeVideoClip
+from PIL import Image, ImageFilter
+import numpy as np
+from moviepy import ImageClip, AudioFileClip, CompositeAudioClip, concatenate_videoclips, CompositeVideoClip, VideoFileClip
 from moviepy.video.fx import Resize, CrossFadeIn
 from moviepy.audio.fx import MultiplyVolume
-from elevenlabs.client import ElevenLabs
-from elevenlabs import save
-from gtts import gTTS
 from services.scene_utils import scene_narration
+from services.voice_provider import get_voice_provider
 
 
 class VideoBuilder:
-  def __init__(self, run_dir: str, elevenlabs_api_key: str = None, bg_music_path: str = None, duck_volume: float = 0.1):
+  def __init__(self, run_dir: str, elevenlabs_api_key: str = None, bg_music_path: str = None, duck_volume: float = 0.1, voice_provider=None):
     self.run_dir = run_dir
-    self.tts_client = ElevenLabs(api_key=elevenlabs_api_key) if elevenlabs_api_key else None
+    self.voice_provider = voice_provider or get_voice_provider(elevenlabs_api_key=elevenlabs_api_key)
     self.bg_music_path = bg_music_path
     self.duck_volume = duck_volume
 
@@ -24,23 +24,7 @@ class VideoBuilder:
     if not text or text.lower() in ("none", "null"):
       raise ValueError(f"Cannot generate voice for '{filename}': narration is empty.")
 
-    target_dir = os.path.join(self.run_dir, "audio")
-    os.makedirs(target_dir, exist_ok=True)
-    filepath = os.path.join(target_dir, f"{filename}.mp3")
-
-    if self.tts_client:
-      voice_map = {"Male": "Adam", "Female": "Rachel"}
-      target_voice = voice_map.get(voice_gender, "Rachel")
-      audio = self.tts_client.generate(text=text, voice=target_voice, model="eleven_multilingual_v2")
-      save(audio, filepath)
-    else:
-      try:
-        tts = gTTS(text=text, lang='en')
-        tts.save(filepath)
-      except Exception as e:
-        raise RuntimeError(f"Fallback gTTS failed (requires internet connection): {e}")
-
-    return filepath
+    return self.voice_provider.generate(text, self.run_dir, filename, voice_gender=voice_gender)
 
   def generate_subtitles(self, scene_data: list, output_filename: str = "subtitles.srt"):
     filepath = os.path.join(self.run_dir, output_filename)
@@ -77,13 +61,13 @@ class VideoBuilder:
     return filepath
 
   def _create_blurred_background(self, image_path: str, duration: int) -> ImageClip:
-    """Creates an automatic blurred background for images that don't fit 9:16 natively."""
-    from PIL import Image, ImageFilter
-    import numpy as np
+    """Updates blurred background for 16:9 dimensions."""
 
     img = Image.open(image_path).convert('RGB')
-    img = img.resize((1080, int(1080 * img.height / img.width)), Image.LANCZOS)
-    img = img.crop((0, (img.height - 1920) // 2, 1080, (img.height + 1920) // 2))
+    # Resize width to 1920, maintain aspect ratio
+    img = img.resize((1920, int(1920 * img.height / img.width)), Image.LANCZOS)
+    # Crop to 1080 height
+    img = img.crop((0, (img.height - 1080) // 2, 1920, (img.height + 1080) // 2))
     img = img.filter(ImageFilter.GaussianBlur(radius=30))
 
     bg_clip = ImageClip(np.array(img)).with_duration(duration)
@@ -91,21 +75,21 @@ class VideoBuilder:
 
   def apply_dynamic_motion(self, image_path: str, duration: int, zoom_factor: float = 1.15) -> ImageClip:
     motion_type = random.choice(["zoom_in", "pan_right", "pan_left", "pan_up", "pan_down"])
-
     base_clip = ImageClip(image_path).with_duration(duration)
 
-    if base_clip.w / base_clip.h > 1080 / 1920:
+    # Check against 16:9 ratio
+    if base_clip.w / base_clip.h < 1920 / 1080:
       bg_clip = self._create_blurred_background(image_path, duration)
-      fg_clip = base_clip.with_effects([Resize(width=1080)])
+      fg_clip = base_clip.with_effects([Resize(height=1080)])
       fg_clip = fg_clip.with_position("center")
       clip = CompositeVideoClip([bg_clip, fg_clip])
     else:
-      clip = base_clip.with_effects([Resize(height=1920)])
-      if clip.w < 1080:
-        clip = clip.with_effects([Resize(width=1080)])
+      clip = base_clip.with_effects([Resize(width=1920)])
+      if clip.h < 1080:
+        clip = clip.with_effects([Resize(height=1080)])
 
     w, h = clip.w, clip.h
-    target_w, target_h = 1080, 1920
+    target_w, target_h = 1920, 1080
 
     def effect_func(get_frame, t):
       p = t / duration
@@ -132,40 +116,35 @@ class VideoBuilder:
     return clip.transform(effect_func)
 
   def assemble(self, scene_data: list, output_filename: str = "final_reel.mp4"):
+    import time
+    assemble_start = time.time()
+
     video_clips = []
     transition_duration = 0.3
-
-    for scene in scene_data:
-      audio_path = os.path.join(self.run_dir, "audio", f"scene_{scene['scene']}.mp3")
-      if os.path.exists(audio_path):
-        a_clip = AudioFileClip(audio_path)
-        scene['duration'] = a_clip.duration + transition_duration
 
     self.generate_subtitles(scene_data)
 
     for i, scene in enumerate(scene_data):
-      img_path = os.path.join(self.run_dir, "images", f"scene_{scene['scene']}.png")
+      vid_path = os.path.join(self.run_dir, "videos", f"scene_{scene['scene']}.mp4")
       audio_path = os.path.join(self.run_dir, "audio", f"scene_{scene['scene']}.mp3")
 
-      if not os.path.exists(img_path):
-        raise FileNotFoundError(f"Missing required image for assembly: {img_path}")
+      if not os.path.exists(vid_path):
+        raise FileNotFoundError(f"Missing required animation for assembly: {vid_path}")
 
-      v_clip = self.apply_dynamic_motion(img_path, scene['duration'])
+      v_clip = VideoFileClip(vid_path).with_effects([Resize(height=1080)])
 
       if os.path.exists(audio_path):
         a_clip = AudioFileClip(audio_path)
-        v_clip = v_clip.with_audio(a_clip)
+        scene['duration'] = a_clip.duration + transition_duration
+        from moviepy.video.fx import loop
+        v_clip = loop(v_clip, duration=scene['duration']).with_audio(a_clip)
 
       if i > 0:
         v_clip = v_clip.with_effects([CrossFadeIn(transition_duration)])
 
       video_clips.append(v_clip)
 
-    final_video = concatenate_videoclips(
-      video_clips,
-      padding=-transition_duration,
-      method="compose"
-    )
+    final_video = concatenate_videoclips(video_clips, padding=-transition_duration, method="compose")
 
     if self.bg_music_path and os.path.exists(self.bg_music_path):
       bg_music = AudioFileClip(self.bg_music_path)
@@ -179,4 +158,27 @@ class VideoBuilder:
 
     output_path = os.path.join(self.run_dir, output_filename)
     final_video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac")
+    self._append_telemetry(assemble_start)
     return output_path
+
+  def _append_telemetry(self, assemble_start: float) -> None:
+    """Best-effort: merges assembly timing + which voice provider actually
+    served the run into the telemetry.json the graph already wrote for this
+    run_dir. Never raises — telemetry is diagnostic, not load-bearing."""
+    import json
+    import time
+
+    filepath = os.path.join(self.run_dir, "telemetry.json")
+    try:
+      payload = {}
+      if os.path.exists(filepath):
+        with open(filepath, "r", encoding="utf-8") as f:
+          payload = json.load(f)
+
+      payload.setdefault("stage_durations_seconds", {})["video_assembly"] = round(time.time() - assemble_start, 2)
+      payload.setdefault("providers_used", {})["voice"] = getattr(self.voice_provider, "last_used", None) or type(self.voice_provider).__name__
+
+      with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    except Exception as e:
+      print(f"[video_builder] telemetry not updated: {e}")

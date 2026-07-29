@@ -2,6 +2,7 @@
 
 import os
 import base64
+import functools
 import concurrent.futures
 from typing import TypedDict, List, Dict, Any, Literal
 from langgraph.graph import StateGraph, END
@@ -12,6 +13,22 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 from services.image_provider import get_image_provider
 from services.prompt_loader import load_prompt
+from services.config_manager import LLM_PROVIDER, HAS_GEMINI, HAS_OPENAI
+from services.telemetry import Telemetry
+
+telemetry = Telemetry()
+
+
+def timed(stage_name: str):
+  """Wraps a LangGraph node so its wall-clock duration gets recorded without
+  touching the node's own body — see services/telemetry.py."""
+  def decorator(fn):
+    @functools.wraps(fn)
+    def wrapper(state):
+      with telemetry.track(stage_name):
+        return fn(state)
+    return wrapper
+  return decorator
 
 
 class ReelState(TypedDict):
@@ -33,16 +50,62 @@ class ReelState(TypedDict):
 
 
 _llm_instance = None
+_raw_llm_cache = {}
+
+
+def _build_raw_llm(name: str):
+  """Constructs (and caches) the underlying LangChain chat model for a given
+  provider name. Cheap to call repeatedly — LangChain client construction
+  doesn't make a network call, but caching avoids rebuilding on every agent."""
+  if name in _raw_llm_cache:
+    return _raw_llm_cache[name]
+
+  if name == "openai":
+    from langchain_openai import ChatOpenAI
+    instance = ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+  else:
+    instance = ChatGoogleGenerativeAI(
+      model=os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest"),
+      max_retries=3
+    )
+  _raw_llm_cache[name] = instance
+  return instance
+
+
+def _fallback_llm_name():
+  """The other provider, but only if it's actually usable (i.e. its key is
+  present) — no point building a fallback that would just fail too."""
+  if LLM_PROVIDER == "openai" and HAS_GEMINI:
+    return "gemini"
+  if LLM_PROVIDER != "openai" and HAS_OPENAI:
+    return "openai"
+  return None
 
 
 def get_llm():
+  """Plain (non-structured) chat model, wrapped with a runtime fallback: if
+  the primary provider errors mid-call (quota, outage, etc.), LangChain
+  retries the same request against the fallback provider automatically
+  instead of the pipeline crashing."""
   global _llm_instance
   if _llm_instance is None:
-    _llm_instance = ChatGoogleGenerativeAI(
-      model="gemini-flash-lite-latest",
-      max_retries=3
-    )
+    primary = _build_raw_llm(LLM_PROVIDER)
+    fallback_name = _fallback_llm_name()
+    _llm_instance = primary.with_fallbacks([_build_raw_llm(fallback_name)]) if fallback_name else primary
   return _llm_instance
+
+
+def get_structured_llm(schema):
+  """Structured-output equivalent of get_llm(). `.with_structured_output()`
+  has to be applied to each raw model *before* they're combined with
+  `.with_fallbacks()`, since that's a chat-model-specific method the generic
+  fallback wrapper doesn't expose."""
+  primary = _build_raw_llm(LLM_PROVIDER).with_structured_output(schema)
+  fallback_name = _fallback_llm_name()
+  if fallback_name:
+    fallback = _build_raw_llm(fallback_name).with_structured_output(schema)
+    return primary.with_fallbacks([fallback])
+  return primary
 
 
 def check_consistency(state: ReelState) -> Literal["subject_extractor", "screenplay"]:
@@ -67,6 +130,7 @@ def extract_text(response) -> str:
   return str(content)
 
 
+@timed("prompt_refiner")
 def prompt_refiner_agent(state: ReelState) -> ReelState:
   print("[graph] refiner starting...")
   prompt = ChatPromptTemplate.from_messages([
@@ -80,6 +144,7 @@ def prompt_refiner_agent(state: ReelState) -> ReelState:
   return {"refined_prompt": extract_text(response)}
 
 
+@timed("screenplay")
 def screenplay_agent(state: ReelState) -> ReelState:
   print("[graph] screenplay starting...")
   system_spec = load_prompt("screenwriter")
@@ -120,6 +185,7 @@ class SceneList(BaseModel):
   scenes: List[Scene]
 
 
+@timed("scene_planner")
 def scene_planner_agent(state: ReelState) -> ReelState:
   print("[graph] planner starting...")
   system_spec = load_prompt("scene_planner")
@@ -131,7 +197,7 @@ def scene_planner_agent(state: ReelState) -> ReelState:
      "Total duration must be exactly {duration} seconds.")
   ])
 
-  structured_llm = get_llm().with_structured_output(SceneList)
+  structured_llm = get_structured_llm(SceneList)
   chain = prompt | structured_llm
   response = chain.invoke(state)
 
@@ -163,6 +229,7 @@ class IntentClassification(BaseModel):
   explanation_style: str = Field(description="Suggested style: 'direct', 'analogy', 'story', 'humorous'")
 
 
+@timed("intent_classifier")
 def intent_classifier_agent(state: ReelState) -> ReelState:
   print("[graph] intent_classifier starting...")
   prompt = ChatPromptTemplate.from_messages([
@@ -175,7 +242,7 @@ def intent_classifier_agent(state: ReelState) -> ReelState:
     ("user", "Prompt: {raw_prompt}")
   ])
 
-  structured_llm = get_llm().with_structured_output(IntentClassification)
+  structured_llm = get_structured_llm(IntentClassification)
   result = (prompt | structured_llm).invoke(state)
 
   print(f"[graph] classified intent: {result.intent} ({result.explanation_style})")
@@ -189,6 +256,7 @@ def route_by_intent(state: ReelState) -> Literal["educational_writer", "creative
   return "creative_director"
 
 
+@timed("educational_writer")
 def educational_writer_agent(state: ReelState) -> ReelState:
   print("[graph] educational_writer starting...")
   system_spec = (
@@ -242,6 +310,7 @@ def _extract_subject(scene: dict, prompt: ChatPromptTemplate, structured_llm) ->
   return scene
 
 
+@timed("subject_extractor")
 def subject_extractor_agent(state: ReelState) -> ReelState:
   print("[graph] subject_extractor starting...")
   system_spec = load_prompt("subject_extractor")
@@ -252,7 +321,7 @@ def subject_extractor_agent(state: ReelState) -> ReelState:
      "Beat summary: {summary}\n"
      "Visual concept: {visual}")
   ])
-  structured_llm = get_llm().with_structured_output(SceneSubject)
+  structured_llm = get_structured_llm(SceneSubject)
 
   with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
     futures = [executor.submit(_extract_subject, scene, prompt, structured_llm) for scene in state["scene_json"]]
@@ -280,6 +349,7 @@ class ConsistencyCheck(BaseModel):
   feedback: str = Field(description="Critique if inconsistent, or empty if perfect")
 
 
+@timed("creative_director")
 def creative_director_agent(state: ReelState) -> ReelState:
   print("[graph] creative_director starting...")
   system_spec = load_prompt("creative_director")
@@ -288,7 +358,7 @@ def creative_director_agent(state: ReelState) -> ReelState:
     ("user", "Topic: {raw_prompt}\nTarget Style: {style}")
   ])
 
-  structured_llm = get_llm().with_structured_output(ConceptList)
+  structured_llm = get_structured_llm(ConceptList)
   response = (prompt | structured_llm).invoke(state)
 
   # Deterministic Selection: Rank by combined score
@@ -303,6 +373,7 @@ def creative_director_agent(state: ReelState) -> ReelState:
   return {"creative_brief": best_concept}
 
 
+@timed("consistency_reviewer")
 def consistency_reviewer_agent(state: ReelState) -> ReelState:
   print("[graph] reviewer starting...")
   system_spec = load_prompt("reviewer")
@@ -311,7 +382,7 @@ def consistency_reviewer_agent(state: ReelState) -> ReelState:
     ("user", "Creative Brief:\n{creative_brief}\n\nGenerated Scenes:\n{scene_json}")
   ])
 
-  structured_llm = get_llm().with_structured_output(ConsistencyCheck)
+  structured_llm = get_structured_llm(ConsistencyCheck)
   review = (prompt | structured_llm).invoke(state)
 
   print(f"[graph] reviewer decision: Consistent={review.is_consistent}")
@@ -342,7 +413,7 @@ def _build_image_prompt(scene: dict, style: str) -> dict:
     ("user", "Subject data: {subject_data}\nTarget Style: {style}")
   ])
 
-  structured_llm = get_llm().with_structured_output(StructuredPrompt)
+  structured_llm = get_structured_llm(StructuredPrompt)
   res = (prompt | structured_llm).invoke({
     "style": style,
     "subject_data": scene.get("subject_data", {"main_subject": scene["visual"]})
@@ -362,6 +433,7 @@ def _build_image_prompt(scene: dict, style: str) -> dict:
   return enhanced_scene
 
 
+@timed("visual_director")
 def visual_director_agent(state: ReelState) -> ReelState:
   print("[graph] visual_director starting...")
   style = state["style"]
@@ -378,6 +450,7 @@ def encode_image(image_path):
     return base64.b64encode(image_file.read()).decode('utf-8')
 
 
+@timed("image_generation_and_critic")
 def image_generation_and_critic_agent(state: ReelState) -> ReelState:
   print("[graph] image_generation_and_critic starting...")
   mode = state.get("dev_mode", "production")
@@ -429,6 +502,11 @@ def image_generation_and_critic_agent(state: ReelState) -> ReelState:
     for c in candidates:
       if os.path.exists(c) and c != best_img:
         os.remove(c)
+
+  telemetry.providers_used["llm"] = LLM_PROVIDER
+  telemetry.set_provider("image", provider)
+  telemetry.note("scene_count", len(state["image_prompts"]))
+  telemetry.save(run_dir)
 
   print("[graph] image_generation_and_critic done")
   return state
