@@ -161,21 +161,31 @@ This allows providers to be swapped without modifying the workflow itself.
 
 # Screenshots
 
-## Landing Page
+## 🚀 Landing Page
 
-(Add Screenshot)
+The application starts with a simple interface where users can create AI-generated reels from a single prompt.
 
-## Generation
+![Landing Page](demo_image/landing.png)
 
-(Add Screenshot)
+## ✍️ Reel Configuration
 
-## Progress
+Users can configure the prompt, duration, style, platform, voice, and generation mode.
 
-(Add Screenshot)
+![Create Reel](demo_image/create-reel.png)
 
-## Final Reel
+## 🤖 Multi-Agent Workflow
 
-(Add Screenshot)
+During generation, every AI agent executes independently.
+
+The progress tracker exposes each stage of the pipeline.
+
+![Generation Progress](demo_image/progress.png)
+
+## 🎬 Final Reel
+
+The generated reel can be previewed, downloaded, and inspected.
+
+![Final Reel](demo_image/result.png)
 
 ---
 
@@ -184,7 +194,7 @@ This allows providers to be swapped without modifying the workflow itself.
 ## Clone
 
 ```bash
-git clone https://github.com/<username>/Script2Reel.git
+git clone https://github.com/AkibDa/Script2Reel.git
 
 cd Script2Reel
 ```
@@ -222,7 +232,7 @@ Only configure the providers you intend to use.
 ## Run
 
 ```bash
-streamlit run app.py
+uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
 ---

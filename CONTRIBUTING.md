@@ -47,7 +47,9 @@ workflows/
 
 prompts/
 
-ui/
+frontend/
+
+backend/
 
 assets/
 ```
