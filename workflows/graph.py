@@ -25,8 +25,42 @@ def timed(stage_name: str):
   def decorator(fn):
     @functools.wraps(fn)
     def wrapper(state):
-      with telemetry.track(stage_name):
-        return fn(state)
+      import os
+      
+      agent_map = {
+        "intent_classifier": "intent_classifier",
+        "educational_writer": "scriptwriter",
+        "creative_director": "scriptwriter",
+        "screenplay": "scriptwriter",
+        "scene_planner": "scene_planner",
+        "consistency_reviewer": "consistency_reviewer",
+        "subject_extractor": "subject_extractor",
+        "visual_director": "visual_director",
+        "image_generation_and_critic": "image_production",
+      }
+      agent_name = agent_map.get(stage_name)
+      
+      job_id = None
+      run_dir = state.get("run_dir")
+      if run_dir:
+        job_id = os.path.basename(run_dir)
+        
+      if job_id and agent_name:
+        from backend import jobs
+        jobs.update_agent_status(job_id, agent_name, "running")
+        
+      try:
+        with telemetry.track(stage_name):
+          result = fn(state)
+        if job_id and agent_name:
+          from backend import jobs
+          jobs.update_agent_status(job_id, agent_name, "completed")
+        return result
+      except Exception as e:
+        if job_id and agent_name:
+          from backend import jobs
+          jobs.update_agent_status(job_id, agent_name, "failed")
+        raise e
     return wrapper
   return decorator
 

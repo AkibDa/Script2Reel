@@ -21,6 +21,17 @@ def create_job(job_id: str) -> Dict[str, Any]:
     "video_path": None,
     "subtitles_path": None,
     "agent_outputs": None,
+    "agent_status": {
+      "intent_classifier": "pending",
+      "scriptwriter": "pending",
+      "scene_planner": "pending",
+      "consistency_reviewer": "pending",
+      "subject_extractor": "pending",
+      "visual_director": "pending",
+      "image_production": "pending",
+      "voice_director": "pending",
+      "video_editor": "pending"
+    }
   }
   with _lock:
     _jobs[job_id] = job
@@ -40,6 +51,25 @@ def update_job(job_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
       return None
     job.update(fields)
     return job.copy()
+
+
+def update_agent_status(job_id: str, agent: str, status: str) -> None:
+  with _lock:
+    job = _jobs.get(job_id)
+    if job:
+      if "agent_status" not in job or not isinstance(job["agent_status"], dict):
+        job["agent_status"] = {
+          "intent_classifier": "pending",
+          "scriptwriter": "pending",
+          "scene_planner": "pending",
+          "consistency_reviewer": "pending",
+          "subject_extractor": "pending",
+          "visual_director": "pending",
+          "image_production": "pending",
+          "voice_director": "pending",
+          "video_editor": "pending"
+        }
+      job["agent_status"][agent] = status
 
 
 def set_progress(job_id: str, stage: str, progress: int) -> None:
@@ -73,12 +103,16 @@ def set_done(
 
 
 def set_failed(job_id: str, error: str) -> None:
-  update_job(
-    job_id,
-    status="failed",
-    stage="Generation failed",
-    error=error,
-  )
+  with _lock:
+    job = _jobs.get(job_id)
+    if job:
+      job["status"] = "failed"
+      job["stage"] = "Generation failed"
+      job["error"] = error
+      if "agent_status" in job and isinstance(job["agent_status"], dict):
+        for agent, status in job["agent_status"].items():
+          if status == "running":
+            job["agent_status"][agent] = "failed"
 
 
 def delete_job(job_id: str) -> bool:

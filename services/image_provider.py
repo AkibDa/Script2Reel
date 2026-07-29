@@ -131,6 +131,9 @@ def get_image_provider(mode: str) -> ImageProvider:
     "mock": lambda: registry.create("image", "mock"),
   }
 
-  order = dedupe_order([IMAGE_PROVIDER, "local_sdxl", "openai", "mock"])
+  if IMAGE_PROVIDER == "mock":
+    order = dedupe_order(["local_sdxl", "openai", "mock"])
+  else:
+    order = dedupe_order([IMAGE_PROVIDER, "local_sdxl", "openai", "mock"])
   candidates = [(name, factories[name]) for name in order if name in factories]
   return FallbackProvider(candidates)

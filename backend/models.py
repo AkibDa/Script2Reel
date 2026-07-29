@@ -13,6 +13,7 @@ class JobStatusResponse(BaseModel):
   stage: str = ""
   progress: int = Field(default=0, ge=0, le=100)
   error: Optional[str] = None
+  agent_status: Optional[Dict[str, str]] = None
 
 
 class AgentOutputsResponse(BaseModel):

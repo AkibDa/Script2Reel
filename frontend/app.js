@@ -6,7 +6,6 @@
   const progressPanel = document.getElementById("progress-panel");
   const resultPanel = document.getElementById("result-panel");
   const statusText = document.getElementById("status-text");
-  const progressBar = document.getElementById("progress-bar");
   const errorText = document.getElementById("error-text");
   const resultVideo = document.getElementById("result-video");
   const downloadMp4 = document.getElementById("download-mp4");
@@ -34,10 +33,32 @@
     retryBtn.disabled = busy;
   }
 
-  function showProgress(stage, progress) {
+  function showProgress(stage, progress, agentStatus) {
     progressPanel.classList.remove("hidden");
     statusText.textContent = stage || "Working...";
-    progressBar.style.width = `${Math.max(0, Math.min(100, progress || 0))}%`;
+    
+    if (agentStatus) {
+      Object.entries(agentStatus).forEach(([agent, status]) => {
+        const item = document.querySelector(`.agent-item[data-agent="${agent}"]`);
+        if (item) {
+          item.classList.remove("is-running", "is-completed", "is-failed");
+          
+          const label = item.querySelector(".agent-status");
+          if (status === "running") {
+            item.classList.add("is-running");
+            if (label) label.textContent = "Running";
+          } else if (status === "completed") {
+            item.classList.add("is-completed");
+            if (label) label.textContent = "Completed";
+          } else if (status === "failed") {
+            item.classList.add("is-failed");
+            if (label) label.textContent = "Failed";
+          } else {
+            if (label) label.textContent = "Pending";
+          }
+        }
+      });
+    }
   }
 
   function showError(message) {
@@ -63,6 +84,12 @@
     hideError();
     hideResult();
     setBusy(true);
+    
+    const spinnerContainer = document.querySelector(".spinner-container");
+    if (spinnerContainer) {
+      spinnerContainer.classList.remove("is-done", "is-failed");
+    }
+    
     showProgress("Submitting job...", 0);
 
     const formData = new FormData(form);
@@ -102,6 +129,11 @@
       startPolling(currentJobId);
     } catch (err) {
       setBusy(false);
+      const spinnerContainer = document.querySelector(".spinner-container");
+      if (spinnerContainer) {
+        spinnerContainer.classList.remove("is-done");
+        spinnerContainer.classList.add("is-failed");
+      }
       showError(err.message || String(err));
     }
   }
@@ -120,20 +152,35 @@
         throw new Error(data.detail || `Status check failed (${res.status})`);
       }
 
-      showProgress(data.stage, data.progress);
+      showProgress(data.stage, data.progress, data.agent_status);
 
       if (data.status === "done") {
         clearPoll();
         setBusy(false);
+        const spinnerContainer = document.querySelector(".spinner-container");
+        if (spinnerContainer) {
+          spinnerContainer.classList.remove("is-failed");
+          spinnerContainer.classList.add("is-done");
+        }
         await showResult(jobId);
       } else if (data.status === "failed") {
         clearPoll();
         setBusy(false);
+        const spinnerContainer = document.querySelector(".spinner-container");
+        if (spinnerContainer) {
+          spinnerContainer.classList.remove("is-done");
+          spinnerContainer.classList.add("is-failed");
+        }
         showError(data.error || "Generation failed.");
       }
     } catch (err) {
       clearPoll();
       setBusy(false);
+      const spinnerContainer = document.querySelector(".spinner-container");
+      if (spinnerContainer) {
+        spinnerContainer.classList.remove("is-done");
+        spinnerContainer.classList.add("is-failed");
+      }
       showError(err.message || String(err));
     }
   }
@@ -175,7 +222,19 @@
     hideResult();
     progressPanel.classList.add("hidden");
     statusText.textContent = "Queued";
-    progressBar.style.width = "0%";
+    
+    // Reset spinner classes
+    const spinnerContainer = document.querySelector(".spinner-container");
+    if (spinnerContainer) {
+      spinnerContainer.classList.remove("is-done", "is-failed");
+    }
+    
+    // Reset agent checklist
+    document.querySelectorAll(".agent-item").forEach((item) => {
+      item.classList.remove("is-running", "is-completed", "is-failed");
+      const label = item.querySelector(".agent-status");
+      if (label) label.textContent = "Pending";
+    });
   });
 
   // Changing creative settings should start a new reel, not resume the old one.

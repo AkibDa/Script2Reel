@@ -122,17 +122,7 @@
         </div>
 
         <div class="field-block">
-          <h3>Keys &amp; audio</h3>
-          <div class="grid">
-            <label class="field">
-              <span>Gemini API key</span>
-              <input id="api_key" name="api_key" type="password" required autocomplete="off" placeholder="Required" />
-            </label>
-            <label class="field">
-              <span>ElevenLabs API key</span>
-              <input id="eleven_key" name="eleven_key" type="password" autocomplete="off" placeholder="Optional" />
-            </label>
-          </div>
+          <h3>Audio</h3>
 
           <label class="field">
             <span>Background music</span>
@@ -154,12 +144,64 @@
 
     <section id="progress-panel" class="status-panel hidden">
       <div class="section-head">
-        <h2>Progress</h2>
+        <h2>Generation Progress</h2>
         <p id="status-text">Queued</p>
       </div>
-      <div class="progress-track">
-        <div id="progress-bar" class="progress-fill" style="width: 0%"></div>
+      
+      <div class="generation-status-container">
+        <div class="spinner-container">
+          <div class="loading-spinner"></div>
+        </div>
+        
+        <ul class="agent-list">
+          <li class="agent-item" data-agent="intent_classifier">
+            <span class="agent-icon"></span>
+            <span class="agent-name">Intent Classifier Agent</span>
+            <span class="agent-status">Pending</span>
+          </li>
+          <li class="agent-item" data-agent="scriptwriter">
+            <span class="agent-icon"></span>
+            <span class="agent-name">Scriptwriter Agent</span>
+            <span class="agent-status">Pending</span>
+          </li>
+          <li class="agent-item" data-agent="scene_planner">
+            <span class="agent-icon"></span>
+            <span class="agent-name">Scene Planner Agent</span>
+            <span class="agent-status">Pending</span>
+          </li>
+          <li class="agent-item" data-agent="consistency_reviewer">
+            <span class="agent-icon"></span>
+            <span class="agent-name">Consistency Reviewer Agent</span>
+            <span class="agent-status">Pending</span>
+          </li>
+          <li class="agent-item" data-agent="subject_extractor">
+            <span class="agent-icon"></span>
+            <span class="agent-name">Subject Extractor Agent</span>
+            <span class="agent-status">Pending</span>
+          </li>
+          <li class="agent-item" data-agent="visual_director">
+            <span class="agent-icon"></span>
+            <span class="agent-name">Visual Director Agent</span>
+            <span class="agent-status">Pending</span>
+          </li>
+          <li class="agent-item" data-agent="image_production">
+            <span class="agent-icon"></span>
+            <span class="agent-name">Image Generation &amp; Critic Agent</span>
+            <span class="agent-status">Pending</span>
+          </li>
+          <li class="agent-item" data-agent="voice_director">
+            <span class="agent-icon"></span>
+            <span class="agent-name">Voice Director Agent</span>
+            <span class="agent-status">Pending</span>
+          </li>
+          <li class="agent-item" data-agent="video_editor">
+            <span class="agent-icon"></span>
+            <span class="agent-name">Video Editor Agent</span>
+            <span class="agent-status">Pending</span>
+          </li>
+        </ul>
       </div>
+
       <p id="error-text" class="error hidden"></p>
       <button type="button" id="retry-btn" class="btn btn--ghost hidden">Retry</button>
     </section>

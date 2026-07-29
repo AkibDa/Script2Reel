@@ -136,8 +136,10 @@ class VideoBuilder:
       if os.path.exists(audio_path):
         a_clip = AudioFileClip(audio_path)
         scene['duration'] = a_clip.duration + transition_duration
-        from moviepy.video.fx import loop
-        v_clip = loop(v_clip, duration=scene['duration']).with_audio(a_clip)
+        from moviepy.video.fx import Loop
+        v_clip = v_clip.with_effects([Loop(duration=scene['duration'])])
+
+        v_clip = v_clip.with_audio(a_clip)
 
       if i > 0:
         v_clip = v_clip.with_effects([CrossFadeIn(transition_duration)])

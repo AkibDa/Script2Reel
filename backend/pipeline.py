@@ -22,7 +22,7 @@ class PipelineRequest:
   platform: str
   voice: str
   dev_mode: str
-  api_key: str
+  api_key: Optional[str] = None
   eleven_key: Optional[str] = None
   music_path: Optional[str] = None
   duck_volume: float = 0.1
@@ -50,13 +50,83 @@ def _clear_generated_assets(run_dir: str) -> None:
       os.remove(path)
 
 
+def infer_resumed_agent_status(run_dir: str, state_values: dict) -> dict:
+  status = {
+    "intent_classifier": "pending",
+    "scriptwriter": "pending",
+    "scene_planner": "pending",
+    "consistency_reviewer": "pending",
+    "subject_extractor": "pending",
+    "visual_director": "pending",
+    "image_production": "pending",
+    "voice_director": "pending",
+    "video_editor": "pending"
+  }
+  
+  if not state_values:
+    return status
+
+  # 1. intent_classifier
+  if "intent" in state_values:
+    status["intent_classifier"] = "completed"
+    
+  # 2. scriptwriter
+  if "screenplay" in state_values or "creative_brief" in state_values:
+    status["scriptwriter"] = "completed"
+    
+  # 3. scene_planner
+  if "scene_json" in state_values and len(state_values["scene_json"]) > 0:
+    status["scene_planner"] = "completed"
+    
+  # 4. consistency_reviewer
+  if "is_consistent" in state_values:
+    status["consistency_reviewer"] = "completed"
+    
+  # 5. subject_extractor
+  scenes = state_values.get("scene_json", [])
+  if scenes and all("subject_data" in s for s in scenes):
+    status["subject_extractor"] = "completed"
+    
+  # 6. visual_director
+  if "image_prompts" in state_values and len(state_values["image_prompts"]) > 0:
+    status["visual_director"] = "completed"
+    
+  # 7. image_production
+  image_prompts = state_values.get("image_prompts", [])
+  if image_prompts:
+    images_dir = os.path.join(run_dir, "images")
+    all_images_exist = True
+    for s in image_prompts:
+      img_path = os.path.join(images_dir, f"scene_{s['scene']}.png")
+      if not os.path.exists(img_path):
+        all_images_exist = False
+        break
+    if all_images_exist:
+      status["image_production"] = "completed"
+      
+  # 8. voice_director
+  if image_prompts and status["image_production"] == "completed":
+    audio_dir = os.path.join(run_dir, "audio")
+    all_audio_exist = True
+    for s in image_prompts:
+      audio_path = os.path.join(audio_dir, f"scene_{s['scene']}.mp3")
+      if not os.path.exists(audio_path):
+        all_audio_exist = False
+        break
+    if all_audio_exist:
+      status["voice_director"] = "completed"
+      
+  return status
+
+
 def run_pipeline(job_id: str, req: PipelineRequest) -> None:
   run_dir = os.path.join("assets", job_id)
   os.makedirs(run_dir, exist_ok=True)
   jobs.update_job(job_id, run_dir=run_dir)
 
   try:
-    os.environ["GOOGLE_API_KEY"] = req.api_key
+    if req.api_key:
+      os.environ["GOOGLE_API_KEY"] = req.api_key
 
     config = {"configurable": {"thread_id": job_id}}
     initial_state = {
@@ -94,6 +164,10 @@ def run_pipeline(job_id: str, req: PipelineRequest) -> None:
         _clear_generated_assets(run_dir)
         current_state = reel_app.get_state(config)
 
+    if current_state.values:
+      resumed_status = infer_resumed_agent_status(run_dir, current_state.values)
+      jobs.update_job(job_id, agent_status=resumed_status)
+
     if not current_state.values:
       print(f"[pipeline] starting fresh job {job_id} (dev_mode={req.dev_mode})")
       final_state = reel_app.invoke(initial_state, config=config)
@@ -126,12 +200,14 @@ def run_pipeline(job_id: str, req: PipelineRequest) -> None:
       duck_volume=req.duck_volume,
     )
 
+    jobs.update_agent_status(job_id, "voice_director", "running")
     for idx, scene in enumerate(scenes):
       jobs.set_progress(
         job_id,
-        f"Voice Director AI generating audio for scene {scene['scene']}...",
+        f"Voice Director AI generating audio and video for scene {scene['scene']}...",
         50 + int(40 * ((idx + 1) / len(scenes))),
       )
+      # 1. Voice
       audio_path = os.path.join(run_dir, "audio", f"scene_{scene['scene']}.mp3")
       if not os.path.exists(audio_path):
         narration = scene_narration(scene)
@@ -142,9 +218,28 @@ def run_pipeline(job_id: str, req: PipelineRequest) -> None:
           )
         vid_builder.generate_voice(narration, f"scene_{scene['scene']}", req.voice)
 
+      # 2. Video Clip
+      video_path = os.path.join(run_dir, "videos", f"scene_{scene['scene']}.mp4")
+      if not os.path.exists(video_path):
+        if req.dev_mode == "mock":
+          from services.video_provider import get_video_provider
+          prov = get_video_provider("mock")
+          prov.generate(scene.get("image_prompt") or scene["visual"], run_dir, f"scene_{scene['scene']}")
+        else:
+          img_path = os.path.join(run_dir, "images", f"scene_{scene['scene']}.png")
+          if os.path.exists(img_path):
+            os.makedirs(os.path.join(run_dir, "videos"), exist_ok=True)
+            clip = vid_builder.apply_dynamic_motion(img_path, duration=scene['duration'])
+            clip.write_videofile(video_path, fps=24, codec="libx264", logger=None)
+          else:
+            raise FileNotFoundError(f"Missing required image for animation: {img_path}")
+    jobs.update_agent_status(job_id, "voice_director", "completed")
+
+    jobs.update_agent_status(job_id, "video_editor", "running")
     jobs.set_progress(job_id, "Video Editor AI assembling the final reel...", 90)
     output_mp4 = vid_builder.assemble(scenes)
     subtitles_path = os.path.join(run_dir, "subtitles.srt")
+    jobs.update_agent_status(job_id, "video_editor", "completed")
 
     jobs.set_done(
       job_id,

@@ -105,12 +105,29 @@ if st.button("Generate / Resume Reel"):
     )
 
     for idx, scene in enumerate(scenes):
-      status_text.text(f"Voice Director AI generating audio for scene {scene['scene']}...")
+      status_text.text(f"Voice Director AI generating audio and video for scene {scene['scene']}...")
+      # 1. Voice
       if not os.path.exists(os.path.join(run_dir, "audio", f"scene_{scene['scene']}.mp3")):
         narration = scene_narration(scene)
         if not narration:
           raise ValueError(f"Scene {scene['scene']} has empty narration — cannot generate voice/subtitles.")
         vid_builder.generate_voice(narration, f"scene_{scene['scene']}", voice)
+
+      # 2. Video Clip
+      video_path = os.path.join(run_dir, "videos", f"scene_{scene['scene']}.mp4")
+      if not os.path.exists(video_path):
+        if dev_mode == "mock":
+          from services.video_provider import get_video_provider
+          prov = get_video_provider("mock")
+          prov.generate(scene.get("image_prompt") or scene["visual"], run_dir, f"scene_{scene['scene']}")
+        else:
+          img_path = os.path.join(run_dir, "images", f"scene_{scene['scene']}.png")
+          if os.path.exists(img_path):
+            os.makedirs(os.path.join(run_dir, "videos"), exist_ok=True)
+            clip = vid_builder.apply_dynamic_motion(img_path, duration=scene['duration'])
+            clip.write_videofile(video_path, fps=24, codec="libx264", logger=None)
+          else:
+            raise FileNotFoundError(f"Missing required image for animation: {img_path}")
 
       progress_bar.progress(50 + int(40 * ((idx + 1) / len(scenes))))
 

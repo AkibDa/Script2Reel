@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import shutil
 import uuid
@@ -44,13 +47,17 @@ async def create_job(
   platform: str = Form("Instagram Reels"),
   voice: str = Form("Male"),
   dev_mode: str = Form("mock"),
-  api_key: str = Form(...),
+  api_key: Optional[str] = Form(None),
   eleven_key: Optional[str] = Form(None),
   duck_volume: float = Form(0.1),
   job_id: Optional[str] = Form(None),
   bg_music: Optional[UploadFile] = File(None),
 ):
-  if not api_key or not api_key.strip():
+  api_key_str = api_key.strip() if (api_key and api_key.strip()) else os.getenv("GOOGLE_API_KEY", "")
+  eleven_key_str = eleven_key.strip() if (eleven_key and eleven_key.strip()) else os.getenv("ELEVENLABS_API_KEY", "")
+
+  from services.config_manager import LLM_PROVIDER
+  if LLM_PROVIDER == "gemini" and not api_key_str:
     raise HTTPException(status_code=400, detail="Gemini API Key is required.")
 
   if duration not in (15, 30, 60):
@@ -106,8 +113,8 @@ async def create_job(
     platform=platform,
     voice=voice,
     dev_mode=dev_mode,
-    api_key=api_key.strip(),
-    eleven_key=(eleven_key.strip() if eleven_key else None) or None,
+    api_key=api_key_str,
+    eleven_key=eleven_key_str or None,
     music_path=music_path,
     duck_volume=duck_volume,
   )
@@ -127,6 +134,7 @@ async def get_job_status(job_id: str):
     stage=job.get("stage") or "",
     progress=job.get("progress") or 0,
     error=job.get("error"),
+    agent_status=job.get("agent_status"),
   )
 
 

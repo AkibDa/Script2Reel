@@ -87,6 +87,9 @@ def get_video_provider(mode: str = "production") -> VideoProvider:
     "local": lambda: registry.create("video", "local"),
     "mock": lambda: registry.create("video", "mock"),
   }
-  order = dedupe_order([VIDEO_PROVIDER, "mock"])
-  candidates = [(name, factories[name]) for name in order]
+  if VIDEO_PROVIDER == "mock":
+    order = dedupe_order(["local", "mock"])
+  else:
+    order = dedupe_order([VIDEO_PROVIDER, "local", "mock"])
+  candidates = [(name, factories[name]) for name in order if name in factories]
   return FallbackProvider(candidates)
