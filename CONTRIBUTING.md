@@ -11,7 +11,7 @@ The project is intentionally designed to be modular so contributors can add new 
 Clone the repository.
 
 ```bash
-git clone ...
+git clone https://github.com/AkibDa/Script2Reel.git
 
 cd Script2Reel
 ```
